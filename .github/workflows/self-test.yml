@@ -1,0 +1,26 @@
+name: self-test
+
+# Several minutes a run, so it runs when started by hand rather than on every push.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  self-test:
+    name: kapelos self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install yamllint
+        run: pipx install yamllint
+
+      - name: Give OpenSearch the memory maps it needs
+        run: sudo sysctl -w vm.max_map_count=262144
+
+      - name: Build a throwaway store and prove every feature
+        run: ./bin/kapelos self-test

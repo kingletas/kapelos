@@ -1,0 +1,13 @@
+# Puts the store behind a reverse proxy that routes on VIRTUAL_HOST, such as nginx-proxy.
+networks:
+  proxy:
+    name: ${PROXY_NETWORK:?set PROXY_NETWORK in .env to your reverse proxy's Docker network}
+    external: true
+
+services:
+  traefik:
+    networks: [default, proxy]
+    environment:
+      # nginx-proxy serves each hostname its own certificate, named after it.
+      VIRTUAL_HOST: ${PROXY_HOSTS:-${APP_HOST:-magento.test}}
+      VIRTUAL_PORT: "80"

@@ -1,0 +1,19 @@
+# Serves the mounted tree through the nginx configuration Magento ships with it.
+include /etc/nginx/kapelos/stores.conf;
+
+upstream fastcgi_backend {
+    server unix:/run/php/fpm.sock;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 64m;
+    fastcgi_read_timeout 600s;
+
+    set $MAGE_ROOT /app;
+    set $MAGE_DEBUG_SHOW_ARGS 0;
+
+    include ${MAGENTO_NGINX_CONF};
+}

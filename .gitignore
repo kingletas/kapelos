@@ -1,0 +1,16 @@
+# Settings and passwords for one machine; .env.example is the shared copy.
+.env
+etc/sites/
+
+# Stores Kapelos downloads, such as the demo.
+var/
+
+# Additions only your machine needs, listed in COMPOSE_FILE.
+compose.local.yaml
+
+# Disposable output, ignored here so it stays ignored in a clone.
+local.d/
+
+# The certificate, key and Traefik setting kapelos cert writes.
+etc/tls/*.pem
+etc/traefik/dynamic/tls.yml

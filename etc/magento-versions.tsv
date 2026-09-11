@@ -1,0 +1,12 @@
+# The service versions Kapelos runs for each Magento release, from Adobe's system requirements for its two newest patches.
+# In each column the first version is the one Kapelos runs, one both patches support, and the rest are the others either supports.
+# kapelos adopt runs the first; kapelos doctor accepts any of them, matching a listed version and anything under it, so 3 accepts 3.6.0.
+# 2.4.9 lists MariaDB 12.3 on premises and 12.3 or 11.8 in the cloud; Kapelos runs 11.8, the long-term release.
+# 2.4.4 lists no Valkey or Varnish, so it gets the versions its successors use.
+# release	mariadb	opensearch	valkey	rabbitmq	varnish	nginx
+2.4.9	11.8 12.3	3.6.0 3	9.0-alpine 9	4.3-management-alpine 4.3	8.0 8	1.30
+2.4.8	11.4 11.8	3.6.0 3	8.0-alpine 8	4.1-management-alpine 4.1 4.3	7.7 8	1.28 1.30
+2.4.7	10.11 11.8	2.19.6 2.19 3	8.0-alpine 8	4.1-management-alpine 4.1 4.3	7.7 8	1.28 1.30
+2.4.6	10.11	2.19.6 2.19 3	8.0-alpine 8	4.1-management-alpine 4.1 4.3	7.7 8	1.28 1.30
+2.4.5	10.11 10.6	2.19.6 2.19	8.0-alpine 8	4.1-management-alpine 4.1 4.3	7.7 8	1.28 1.30
+2.4.4	10.6	2.19.6 2.19	8.0-alpine 8	3.13-management-alpine 3.13 3.9	7.7 8	1.28 1.30

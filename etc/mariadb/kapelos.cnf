@@ -1,0 +1,6 @@
+[mysqld]
+# Sized to fit inside the db container's 2 GiB memory limit.
+innodb_buffer_pool_size = 1G
+max_allowed_packet = 256M
+max_heap_table_size = 64M
+tmp_table_size = 64M

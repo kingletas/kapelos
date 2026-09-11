@@ -1,0 +1,48 @@
+# Requests carrying an Xdebug trigger go to the debugging containers; everything else goes through Varnish.
+x-xdebug-rule: &xdebug-rule >-
+  HeaderRegexp(`Cookie`, `XDEBUG_(SESSION|TRIGGER|PROFILE|TRACE)=`)
+  || QueryRegexp(`XDEBUG_SESSION`, `.*`) || QueryRegexp(`XDEBUG_SESSION_START`, `.*`)
+  || QueryRegexp(`XDEBUG_TRIGGER`, `.*`) || QueryRegexp(`XDEBUG_PROFILE`, `.*`) || QueryRegexp(`XDEBUG_TRACE`, `.*`)
+
+http:
+  routers:
+    xdebug:
+      rule: *xdebug-rule
+      entryPoints: [web]
+      service: web-debug
+      middlewares: [xdebug-header]
+      priority: 100
+    xdebug-tls:
+      rule: *xdebug-rule
+      entryPoints: [websecure]
+      service: web-debug
+      middlewares: [xdebug-header]
+      priority: 100
+      tls: {}
+    store:
+      rule: PathPrefix(`/`)
+      entryPoints: [web]
+      service: varnish
+      priority: 1
+    store-tls:
+      rule: PathPrefix(`/`)
+      entryPoints: [websecure]
+      service: varnish
+      priority: 1
+      tls: {}
+
+  middlewares:
+    xdebug-header:
+      headers:
+        customResponseHeaders:
+          X-Kapelos-Xdebug: "on"
+
+  services:
+    varnish:
+      loadBalancer:
+        servers:
+          - url: http://varnish:80
+    web-debug:
+      loadBalancer:
+        servers:
+          - url: http://web-debug:80

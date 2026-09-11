@@ -1,0 +1,13 @@
+# What kapelos site audit checks in the store's own settings.
+# A module is checked in app/etc/config.php; a setting in the database, where a missing row keeps Magento's safe default.
+# kind	subject	fails when	severity	why
+module	Magento_Security	= 0	FAIL	admin sessions, lockouts and password rules all come from this module
+module	Magento_TwoFactorAuth	= 0	FAIL	the admin has no second factor, so a stolen password is enough
+module	Magento_Csp	= 0	WARN	no content security policy is sent, so an injected script runs unhindered
+module	Magento_Captcha	= 0	WARN	no CAPTCHA can be shown at login, so passwords can be guessed at speed
+setting	dev/template/allow_symlink	= 1	FAIL	templates load through symlinks from outside the module, a known route to running code
+setting	admin/security/use_form_key	= 0	FAIL	admin forms stop checking their form key, so another site can submit them in an admin's session
+setting	admin/security/lockout_failures	= 0	WARN	admin accounts are never locked, however many logins fail
+setting	admin/security/session_lifetime	> 86400	WARN	an admin session lasts longer than a day
+setting	admin/security/password_is_forced	= 0	WARN	an admin is never made to replace an expired password
+setting	dev/debug/template_hints_storefront	= 1	WARN	template hints show the store's file paths to every visitor

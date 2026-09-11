@@ -1,0 +1,23 @@
+# Traefik's own settings: two entry points and routes read from files, with no Docker socket.
+entryPoints:
+  web:
+    address: ":80"
+    # A reverse proxy in front, such as nginx-proxy, says whether the visitor used HTTPS.
+    forwardedHeaders:
+      trustedIPs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+  websecure:
+    address: ":443"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+ping: {}
+
+log:
+  level: WARN
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false

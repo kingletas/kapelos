@@ -1,0 +1,14 @@
+version: 2
+
+updates:
+  # Moves each pinned action SHA and its version comment together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      all:
+        patterns: ["*"]
+    open-pull-requests-limit: 2

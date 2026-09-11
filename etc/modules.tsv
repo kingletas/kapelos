@@ -1,0 +1,10 @@
+# Kingletas modules kapelos modules can install, straight from their GitHub repositories.
+# A dependency is installed only because a module needs it, and is never asked for by name.
+# package	magento module	version	role	repository
+kingletas/module-foundation	Kingletas_Foundation	^2.0	dependency	https://github.com/kingletas/magento2-module-foundation
+kingletas/module-logger	Kingletas_Logger	^3.0	dependency	https://github.com/kingletas/magento2-module-logger
+kingletas/module-catalog-access	Kingletas_CatalogAccess	^2.0	module	https://github.com/kingletas/magento2-module-catalog-access
+kingletas/module-promotion-access	Kingletas_PromotionAccess	^2.0	module	https://github.com/kingletas/magento2-module-promotion-access
+kingletas/module-process-guard	Kingletas_ProcessGuard	^2.0	module	https://github.com/kingletas/magento2-module-process-guard
+kingletas/module-section-policy	Kingletas_SectionPolicy	^2.0	module	https://github.com/kingletas/magento2-module-section-policy
+kingletas/module-cache-vary	Kingletas_CacheVary	^2.0	module	https://github.com/kingletas/magento2-module-cache-vary

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Checks scripts/install and scripts/uninstall against a throwaway prefix, in both directions.
+# shellcheck disable=SC2016 # sh -c takes its values as arguments, so the single quotes are meant
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+work="$(mktemp -d)"
+trap 'chmod -R u+w "$work"; rm -rf "$work"' EXIT
+failed=0
+
+check() {
+  local name="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "install: $name"
+  else
+    echo "install: FAILED: $name"
+    failed=1
+  fi
+}
+
+refused() {
+  ! "$@"
+}
+
+# A copy of Kapelos in a folder with a space in its name, so I test the quoting too.
+copy="$work/my kapelos"
+mkdir -p "$copy/bin" "$copy/scripts"
+cp "$here/scripts/install" "$here/scripts/uninstall" "$copy/scripts/"
+printf '#!/usr/bin/env bash\necho "ran with: $*"\n' >"$copy/bin/kapelos"
+chmod +x "$copy/bin/kapelos"
+prefix="$work/prefix"
+
+check "installs a command into the prefix" "$copy/scripts/install" "$prefix"
+check "the command runs Kapelos with its arguments, from any folder" \
+  sh -c 'cd / && [ "$("$1/kapelos" a "b c")" = "ran with: a b c" ]' sh "$prefix"
+check "installing again replaces it" "$copy/scripts/install" "$prefix"
+
+printf '#!/bin/sh\necho someone else\n' >"$work/foreign"
+mkdir -p "$work/other"
+cp "$work/foreign" "$work/other/kapelos"
+check "another tool's kapelos is refused and left as it was" \
+  sh -c '! "$1" "$2" && cmp -s "$2/kapelos" "$3"' sh "$copy/scripts/install" "$work/other" "$work/foreign"
+check "uninstall refuses another tool's kapelos" refused "$copy/scripts/uninstall" "$work/other"
+
+check "a symlink to this Kapelos is replaced by the command" \
+  sh -c 'mkdir -p "$2" && ln -s "$1/bin/kapelos" "$2/kapelos" && "$1/scripts/install" "$2" && [ ! -L "$2/kapelos" ]' \
+  sh "$copy" "$work/linked"
+
+mv "$copy" "$work/moved"
+check "after Kapelos moves, the command says so and fails" \
+  sh -c '! out="$("$1/kapelos" 2>&1)" && case "$out" in *"Run make install from wherever it is now"*) ;; *) exit 1 ;; esac' sh "$prefix"
+mv "$work/moved" "$copy"
+
+check "uninstall removes the command" sh -c '"$1/scripts/uninstall" "$2" && [ ! -e "$2/kapelos" ]' sh "$copy" "$prefix"
+check "uninstall with nothing installed says so" "$copy/scripts/uninstall" "$prefix"
+
+[[ $failed -eq 0 ]]

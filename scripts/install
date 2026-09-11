@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Puts a kapelos command on your PATH that runs this copy of Kapelos: scripts/install [PREFIX]
+# Kapelos keeps its sites, stores and snapshots in its own folder, so the command points here instead of copying it.
+set -euo pipefail
+
+prefix="${1:-$HOME/bin}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+target="$prefix/kapelos"
+marker="# Installed by make install from a Kapelos folder."
+
+ours() {
+  if [[ -L $1 ]]; then
+    [[ $(readlink "$1") == "$here/bin/kapelos" ]]
+  else
+    grep -qxF "$marker" "$1" 2>/dev/null
+  fi
+}
+
+if [[ -e $target || -L $target ]] && ! ours "$target"; then
+  echo "install: $target is already there and isn't a Kapelos install, so it's left alone." >&2
+  echo "Move it aside, or install somewhere else: make install PREFIX=~/.local/bin" >&2
+  exit 1
+fi
+
+mkdir -p "$prefix"
+printf -v command '%q' "$here/bin/kapelos"
+tmp="$(mktemp "$prefix/.kapelos.XXXXXX")"
+cat >"$tmp" <<WRAPPER
+#!/usr/bin/env bash
+$marker
+# It runs the Kapelos below. Update Kapelos there with git pull; never edit this file.
+kapelos=$command
+if [[ ! -x \$kapelos ]]; then
+  echo "kapelos: there's no Kapelos at \$kapelos any more. Run make install from wherever it is now." >&2
+  exit 1
+fi
+exec "\$kapelos" "\$@"
+WRAPPER
+chmod 0555 "$tmp"
+mv -f "$tmp" "$target"
+echo "Installed kapelos in $target. It runs Kapelos from $here, so keep that folder where it is."
+
+case ":$PATH:" in
+  *":$prefix:"*) ;;
+  *) echo "$prefix isn't on your PATH, so add it there, or install into a folder that is: make install PREFIX=~/.local/bin" ;;
+esac
+
+# Two commands with one name run whichever comes first on PATH, so any other copy is named.
+first="$(command -v kapelos || true)"
+if [[ -n $first && $first != "$target" ]]; then
+  echo "$first comes first on your PATH, so typing kapelos runs that one. Remove it, or put $prefix ahead of it."
+fi

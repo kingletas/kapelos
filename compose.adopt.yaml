@@ -1,0 +1,26 @@
+# An adopted store keeps its own app/etc/env.php.
+# Kapelos's version of it, which kapelos adopt writes, is laid over it inside the PHP containers.
+services:
+  php:
+    volumes:
+      - type: bind
+        source: ${KAPELOS_ENV_PHP:?set KAPELOS_ENV_PHP to the env.php kapelos adopt wrote}
+        target: /app/app/etc/env.php
+        bind:
+          create_host_path: false
+
+  php-debug:
+    volumes:
+      - type: bind
+        source: ${KAPELOS_ENV_PHP:?set KAPELOS_ENV_PHP to the env.php kapelos adopt wrote}
+        target: /app/app/etc/env.php
+        bind:
+          create_host_path: false
+
+  cron:
+    volumes:
+      - type: bind
+        source: ${KAPELOS_ENV_PHP:?set KAPELOS_ENV_PHP to the env.php kapelos adopt wrote}
+        target: /app/app/etc/env.php
+        bind:
+          create_host_path: false

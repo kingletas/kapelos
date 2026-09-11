@@ -1,0 +1,18 @@
+# Bluetir against a Kapelos store: its own Luma profile and sample-data order, with no delay, since the store is yours.
+base_url: http://localhost:8080
+storefront: /opt/bluetir/etc/storefronts/magento2.yml
+assertions: /opt/bluetir/etc/assertions/magento2.yml
+baseline: /out/baseline.yml
+personas: /opt/bluetir/etc/personas.yml
+orders: /opt/bluetir/etc/orders/luma.yml
+
+runs: 1
+timeout: 30
+headless: true
+screenshots_dir: /out/screenshots
+
+# Magento's Knockout checkout renders after the document is complete.
+settle: 4
+
+http:
+  delay: 0

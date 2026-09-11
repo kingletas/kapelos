@@ -1,0 +1,50 @@
+# Changelog
+
+## Unreleased
+
+The first version: a Docker Compose stack that runs a Magento 2.4 store, whether you already have one or not.
+
+- `kapelos demo` downloads Mage-OS, installs it and prints where everything is, with no questions. `kapelos interactive` asks for a name, where the code comes from, a hostname, HTTPS and sample products, then does the rest unattended.
+- `make install` puts a `kapelos` command on your `PATH`, in `~/bin` unless `PREFIX` says otherwise, that runs the Kapelos folder it was installed from. `make install` won't overwrite a `kapelos` it didn't install, names any other `kapelos` that comes first on `PATH`, and says so if the folder has moved. `make uninstall` removes it and leaves every site in place.
+- Several projects: each is a site with its own settings file, code, database and caches. `kapelos use` switches between them, stopping the running one with its data kept, and only one runs at a time.
+- `kapelos import` loads a database dump and `kapelos connect` points an existing store at the stack. `import` and `magento-install` both refuse a database that already has tables.
+- `kapelos adopt` runs a store you already have as it is: its code where it lives, a copy of its database from a data directory or a dump, and its own `app/etc/env.php` untouched, with Kapelos's version laid over it. `adopt` keeps the store's mode and compiled code, sends its mail to Mailpit, names each SourceGuardian-encoded extension and whether it loads, checks each address serves its page and theme, and runs extra storefronts by hostname with `--store`.
+- `connect` repoints every database connection, not only the main one, and pins search and mail in `env.php`, so a store that names its own search server still reaches the stack's.
+- The reverse proxy layer takes several hostnames in `PROXY_HOSTS`, each served its own certificate.
+- A store can carry its own Kapelos settings in a `.kapelos` folder: `settings.env` for facts about the store, such as service versions, its nginx rules and its storefronts; `compose.yaml` for services it needs; and `commands/` for commands of its own. The compose file and commands run only once trusted with `kapelos trust`, and again after they change. Your own commands for every store go in `~/.config/kapelos/commands`.
+- `STORES` sends each hostname to its store view, on any site, and `kapelos stores apply` sets their addresses.
+- `kapelos snapshot` saves and restores the database, search index and queue, and `kapelos db dump` writes a gzipped dump readable only by you.
+- `kapelos site remove` deletes a site's containers, database, snapshots and files after you type its name. `site remove` leaves a store's code where it is unless Kapelos downloaded it.
+- `kapelos cron` runs Magento's scheduled jobs and queue consumers, off until you turn it on, and asks first on a site that isn't disposable.
+- `kapelos npm`, `npx`, `node` and `grunt` run Node in its own container at the store's root, with LiveReload for `grunt watch`.
+- `kapelos doctor` checks this machine and the active site: versions, memory, disk, ports, hostnames, certificates, trust and service versions.
+- `etc/magento-versions.tsv` lists the service versions for each Magento release. `adopt` runs the store's row and `doctor` checks against it. The defaults now match Magento 2.4.9: MariaDB 11.8, Valkey 9, Varnish 8 and nginx 1.30.
+- `demo`, `interactive` and `adopt` refuse to start while another site is running, instead of stopping it.
+- `kapelos modules add` installs five Kingletas modules straight from GitHub (catalog-access, promotion-access, process-guard, section-policy and cache-vary), and `remove` takes them out again, repositories included. `demo` adds them and `interactive` asks.
+- `kapelos site audit` checks a site's dependencies with dep-intel, its own code for credentials with credential-guard, its security modules and settings, files in `pub/` and the headers Magento sends. A Mage-OS store is checked against Magento's own advisories as the release it's built on, and a feed that couldn't be downloaded fails the audit rather than passing the packages the audit never checked.
+- `kapelos bluetir` and `kapelos drexbot` run the two browser suites against the active site, each in its own container on the host's network. Placing an order needs the site's `DISPOSABLE=yes`, which `demo` and `interactive` set. `kapelos sample-data` adds the Luma catalogue they shop from to an installed store, and fails when Magento's own sample-data install does.
+- `kapelos manipulus` plans and builds RequireJS bundles on a deployed store. `kapelos deploy` writes them again after the static files and refreshes their integrity hashes.
+- `kapelos ci` runs the store's GitHub Actions workflows on this machine with act, downloaded once and checked against a checksum Kapelos records. Each job gets a copy of the store, so a workflow can't change your working tree, and a failed job leaves no container behind.
+- `kapelos info` lists every address, port and login, and `kapelos valkey` opens `valkey-cli`. OpenSearch and RabbitMQ's management page are published on loopback.
+- `kapelos test` runs the store's unit and integration tests, with the integration tests in a database, queue and search index of their own. `kapelos self-test` proves Kapelos end to end on a throwaway store.
+- `bin/kapelos` runs under bash 3.2, the version macOS ships, and `kapelos check` holds it to that.
+- `docs/examples.md` has a recipe for each everyday task, a store's own `.kapelos` folder worked through, and commands of your own, from a first one to one that runs PHP inside the store.
+- RabbitMQ has a fixed hostname, so its queues survive `kapelos down`, `use` and a snapshot restore.
+- `kapelos adopt` declares the store's queues in RabbitMQ and checks each one is there, because Magento declares them only during `setup:upgrade`, which an adopted store may never run. `kapelos queues` does the same on any site without the rest of `setup:upgrade`, so it leaves compiled code, static files and `app/etc/config.php` as they are.
+- `kapelos down`, `use` and `site remove` stop every container a site started, including one whose profile has since been switched off. `up` leaves such a container running, so switching off Mailpit for your own mail catcher says to run `down` first.
+- PHP 8.4, nginx, Varnish, MariaDB, OpenSearch, RabbitMQ, two Valkey caches and Mailpit, each version set in `.env`.
+- OpenSearch is pinned to 3.6.0 and has 2 GiB, because I measured it at about 1.3 GiB at rest with every bundled plugin. A site file that says `OPENSEARCH_VERSION=3` follows the newest 3.x instead.
+- One command, `bin/kapelos`, runs everything, with or without make. Every make target calls it.
+- The tree follows the Linux split: `bin/` for the command, `etc/` for the settings the containers read, `opt/php/` for the one image Kapelos builds. Changing a setting in `etc/` needs a restart, not a rebuild.
+- `kapelos env` writes `.env` with a random password for everything that needs one. Nothing starts without `MAGENTO_SRC` or the passwords, and a mount path that doesn't exist is an error rather than a new empty folder.
+- `kapelos magento-install` installs Magento against the stack and refuses to install over a tree that's already installed.
+- The PHP container runs as your user, so files it writes are yours. Xdebug is installed and off, and SourceGuardian is available as a build option.
+- Changing `.env` and running `kapelos up` again applies the change without taking the store down.
+- `kapelos up` returns once the store can serve, including Varnish's backend being healthy. A service still marked unhealthy from earlier is restarted once, and named, rather than failing the command.
+- Any Magento command runs directly, as `kapelos cache:flush` or `kapelos c:f`, inside the PHP container. A command with a colon is Magento's, and Kapelos's own never have one.
+- `kapelos cache-reset` empties Magento's cache, Valkey's cache instance and Varnish in one go, and keeps sessions.
+- `kapelos deploy` rehearses a production deployment on your tree, from `composer install --no-dev` to production mode, and stops at the first step that fails. `kapelos develop` goes back to developer mode, including from a deployment that failed halfway.
+- Varnish passes everything through until you give it the VCL Magento generates.
+- Traefik sits in front and answers HTTP on 8080 and HTTPS on 8443. `kapelos cert` issues a trusted certificate with mkcert, and Traefik serves it without a restart.
+- A second PHP container with Xdebug on gets every request carrying an Xdebug trigger, before Varnish can answer it from cache. The normal PHP container always has Xdebug off. `kapelos debug <command>` runs a Magento command through it.
+- `compose.proxy.yaml` puts Traefik behind a reverse proxy that routes on `VIRTUAL_HOST`, such as nginx-proxy.

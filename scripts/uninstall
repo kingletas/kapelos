@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Removes the kapelos command that scripts/install put on your PATH: scripts/uninstall [PREFIX]
+# Only a Kapelos install is removed; your sites, stores and snapshots stay in Kapelos's folder.
+set -euo pipefail
+
+prefix="${1:-$HOME/bin}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+target="$prefix/kapelos"
+marker="# Installed by make install from a Kapelos folder."
+
+if [[ ! -e $target && ! -L $target ]]; then
+  echo "There's no kapelos in $prefix, so there's nothing to remove."
+  exit 0
+fi
+if [[ -L $target && $(readlink "$target") == "$here/bin/kapelos" ]] || grep -qxF "$marker" "$target" 2>/dev/null; then
+  rm -f "$target"
+  echo "Removed $target. Kapelos itself, and every site in it, is still in $here."
+else
+  echo "uninstall: $target isn't a Kapelos install, so it's left alone." >&2
+  exit 1
+fi

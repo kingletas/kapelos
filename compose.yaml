@@ -1,0 +1,423 @@
+# Every service a Magento 2 store needs, running the Magento tree that MAGENTO_SRC points at.
+name: ${COMPOSE_PROJECT_NAME:-kapelos}
+
+x-valkey: &valkey
+  image: valkey/valkey:${VALKEY_VERSION:-9.0-alpine}
+  healthcheck:
+    test: ["CMD", "valkey-cli", "ping"]
+    interval: 10s
+    timeout: 3s
+    retries: 5
+  mem_limit: 512m
+  restart: unless-stopped
+
+services:
+  php:
+    build:
+      context: ./opt/php
+      args:
+        PHP_VERSION: ${PHP_VERSION:-8.4}
+        UID: ${HOST_UID:-1000}
+        GID: ${HOST_GID:-1000}
+        INSTALL_SOURCEGUARDIAN: ${INSTALL_SOURCEGUARDIAN:-false}
+    image: ${COMPOSE_PROJECT_NAME:-kapelos}-php:${PHP_VERSION:-8.4}
+    working_dir: /app
+    environment:
+      XDEBUG_MODE: "off"
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+    # A missing source is an error, never a new empty directory, on every bind mount below.
+    volumes:
+      - type: bind
+        source: ${MAGENTO_SRC:?set MAGENTO_SRC in .env to the Magento tree you want to run}
+        target: /app
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./etc/php/kapelos.ini
+        target: /usr/local/etc/php/conf.d/zz-kapelos.ini
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./etc/php/fpm-pool.conf
+        target: /usr/local/etc/php-fpm.d/zz-kapelos.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - composer:/home/app/.composer
+      - php-socket:/run/php
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@stream_socket_client('unix:///run/php/fpm.sock') ? 0 : 1);"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    depends_on:
+      db:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      valkey-session:
+        condition: service_healthy
+      valkey-cache:
+        condition: service_healthy
+    mem_limit: 4g
+    restart: unless-stopped
+
+  # The same PHP with Xdebug on, reached only by requests carrying an Xdebug trigger.
+  php-debug:
+    extends: php
+    environment:
+      XDEBUG_MODE: ${XDEBUG_MODE:-debug}
+    volumes:
+      - php-debug-socket:/run/php
+    mem_limit: 2g
+
+  # Magento's scheduled jobs, which also start its queue consumers. Only with CRON=yes in the site's settings.
+  cron:
+    extends: php
+    profiles: [cron]
+    entrypoint: ["sh", "-c"]
+    command: ["while :; do php bin/magento cron:run; sleep 60; done"]
+    # Healthy while its loop is alive; the loop is process 1.
+    healthcheck:
+      test: ["CMD", "kill", "-0", "1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+      start_interval: 1s
+    depends_on:
+      php:
+        condition: service_healthy
+    mem_limit: 2g
+
+  web:
+    image: nginx:${NGINX_VERSION:-1.30}
+    environment:
+      MAGENTO_NGINX_CONF: ${MAGENTO_NGINX_CONF:-/app/nginx.conf.sample}
+      NGINX_ENVSUBST_FILTER: MAGENTO_NGINX_CONF
+    volumes:
+      - type: bind
+        source: ./etc/nginx/default.conf.template
+        target: /etc/nginx/templates/default.conf.template
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./etc/nginx/fastcgi_params
+        target: /etc/nginx/fastcgi_params
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_STORES:-./etc/nginx/stores.conf}
+        target: /etc/nginx/kapelos/stores.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MAGENTO_SRC:?set MAGENTO_SRC in .env to the Magento tree you want to run}
+        target: /app
+        read_only: true
+        bind:
+          create_host_path: false
+      - php-socket:/run/php
+    # No depends_on php: they meet at a socket, so recreating php never restarts nginx.
+    mem_limit: 256m
+    restart: unless-stopped
+
+  web-debug:
+    extends: web
+    volumes:
+      - php-debug-socket:/run/php
+
+  varnish:
+    image: varnish:${VARNISH_VERSION:-8.0}
+    command: -p http_resp_hdr_len=65536 -p http_resp_size=196608 -p workspace_backend=262144
+    volumes:
+      - type: bind
+        source: ${VARNISH_VCL:-./etc/varnish/default.vcl}
+        target: /etc/varnish/default.vcl
+        read_only: true
+        bind:
+          create_host_path: false
+    # Healthy only once Varnish answers and no backend is sick, so kapelos up returns when the store can serve.
+    healthcheck:
+      test: ["CMD-SHELL", "list=$$(varnishadm backend.list) && ! printf '%s' \"$$list\" | grep -qw sick"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 1s
+    # Varnish resolves its backend once, so it restarts whenever web is updated.
+    depends_on:
+      web:
+        condition: service_started
+        restart: true
+    mem_limit: 512m
+    restart: unless-stopped
+
+  traefik:
+    image: traefik:${TRAEFIK_VERSION:-v3.7}
+    command: --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HTTPS_PORT:-8443}:443"
+    volumes:
+      - type: bind
+        source: ./etc/traefik/traefik.yml
+        target: /etc/traefik/traefik.yml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./etc/traefik/dynamic
+        target: /etc/traefik/dynamic
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./etc/tls
+        target: /etc/traefik/tls
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    depends_on:
+      - varnish
+      - web-debug
+    mem_limit: 128m
+    restart: unless-stopped
+
+  db:
+    image: mariadb:${MARIADB_VERSION:-11.8}
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?set DB_ROOT_PASSWORD in .env, or run kapelos env}
+      MARIADB_DATABASE: ${DB_NAME:-magento}
+      MARIADB_USER: ${DB_USER:-magento}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env, or run kapelos env}
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - db-data:/var/lib/mysql
+      - type: bind
+        source: ./etc/mariadb/kapelos.cnf
+        target: /etc/mysql/conf.d/kapelos.cnf
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${DB_PORT:-13306}:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 2g
+    restart: unless-stopped
+
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-3.6.0}
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${OPENSEARCH_PORT:-9200}:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    # The 512 MB heap, the bundled plugins' classes and locked memory come to about 1.3 GiB at rest.
+    mem_limit: 2g
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:${RABBITMQ_VERSION:-4.3-management-alpine}
+    # RabbitMQ keeps its queues under its node name, which is its hostname, so a new container needs the same one.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-magento}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env, or run kapelos env}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    mem_limit: 512m
+    restart: unless-stopped
+
+  valkey-session:
+    <<: *valkey
+
+  valkey-cache:
+    <<: *valkey
+
+  # dep-intel and credential-guard, run only by kapelos site audit, against the store read-only.
+  audit:
+    build:
+      context: ./opt/audit
+    image: kapelos-audit:${KAPELOS_AUDIT_TAG:-2026.09}
+    profiles: [tools]
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - type: bind
+        source: ${MAGENTO_SRC:?set MAGENTO_SRC in .env to the Magento tree you want to run}
+        target: /site
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./var/intel
+        target: /intel
+        bind:
+          create_host_path: false
+    mem_limit: 1g
+
+  # The browser tools share the host's network, so they open the store at the address your own browser uses.
+  bluetir:
+    build:
+      context: ./opt/bluetir
+    image: kapelos-bluetir:${KAPELOS_BLUETIR_TAG:-2026.09}
+    profiles: [tools]
+    network_mode: host
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    shm_size: 1gb
+    volumes:
+      - type: bind
+        source: ./etc/bluetir
+        target: /kapelos
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./var/tools/${COMPOSE_PROJECT_NAME:-kapelos}/bluetir
+        target: /out
+        bind:
+          create_host_path: false
+
+  drexbot:
+    build:
+      context: ./opt/drexbot
+    image: kapelos-drexbot:${KAPELOS_DREXBOT_TAG:-2026.09}
+    profiles: [tools]
+    network_mode: host
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    shm_size: 1gb
+    environment:
+      MAGENTO_URL: ${MAGENTO_BASE_URL:-http://localhost:8080/}
+      MAGENTO_ADMIN_PATH: /${MAGENTO_ADMIN_URI:-admin}
+      MAGENTO_DIR: /site
+    volumes:
+      - type: bind
+        source: ${MAGENTO_SRC:?set MAGENTO_SRC in .env to the Magento tree you want to run}
+        target: /site
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./var/tools/${COMPOSE_PROJECT_NAME:-kapelos}/drexbot
+        target: /state
+        bind:
+          create_host_path: false
+
+  # Built from manipulus's own Dockerfile, at a pinned commit on GitHub.
+  manipulus:
+    build:
+      context: https://github.com/kingletas/manipulus.git#d25ea07c9f7e82c3ace1037f177a6a7851724c22
+    image: kapelos-manipulus:${KAPELOS_MANIPULUS_TAG:-2026.09}
+    profiles: [tools]
+    network_mode: host
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    volumes:
+      - type: bind
+        source: ${MAGENTO_SRC:?set MAGENTO_SRC in .env to the Magento tree you want to run}
+        target: /site
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./var/tools/${COMPOSE_PROJECT_NAME:-kapelos}/manipulus
+        target: /out
+        bind:
+          create_host_path: false
+
+  mailpit:
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.31}
+    profiles: [mail]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MAIL_UI_PORT:-8025}:8025"
+    mem_limit: 128m
+    restart: unless-stopped
+
+  # Node for the store's front end, run only by kapelos node, npm, npx and grunt.
+  node:
+    image: node:${NODE_VERSION:-22}
+    profiles: [tools]
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /app
+    environment:
+      HOME: /tmp
+      npm_config_cache: /npm-cache
+    volumes:
+      - type: bind
+        source: ${MAGENTO_SRC:?set MAGENTO_SRC in .env to the Magento tree you want to run}
+        target: /app
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./var/npm-cache
+        target: /npm-cache
+        bind:
+          create_host_path: false
+    # LiveReload, for grunt watch; published only while kapelos grunt runs.
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${LIVERELOAD_PORT:-35729}:35729"
+    mem_limit: 2g
+
+volumes:
+  # A shared tmpfs, writable by both containers whatever user each runs as.
+  php-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: mode=1777
+  php-debug-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: mode=1777
+  db-data:
+  opensearch-data:
+  rabbitmq-data:
+  composer:
