@@ -172,7 +172,8 @@ The folders follow the usual Linux split between programs, settings and packages
 
 | Folder | What's in it |
 |---|---|
-| `bin/` | `kapelos`, the one command |
+| `bin/` | `kapelos`: the settings every part reads, the list of commands, and the dispatch that picks one |
+| `lib/` | The rest of it, a file per job, sourced by `bin/kapelos` at startup. `core.sh` holds the settings, trust and container helpers the others build on; then `sites.sh`, `store.sh`, `adopt.sh`, `stack.sh`, `checks.sh`, `tools.sh`, `commands.sh` and `selftest.sh` |
 | `etc/` | The settings the containers read: `traefik/`, `nginx/`, `varnish/`, `mariadb/` and `php/`. Edit one and run `bin/kapelos restart <service>`. No rebuild needed. `etc/tls/` holds the certificate `bin/kapelos cert` issues, and `etc/sites/` holds one settings file per project |
 | `opt/php/`, `opt/audit/`, `opt/bluetir/`, `opt/drexbot/` | The images Kapelos builds: PHP, the audit tools, and the two browser suites. manipulus is built from its own Dockerfile on GitHub. The other services use stock images |
 | `var/stores/` | The stores Kapelos downloads for you, such as the demo. Ignored by git |

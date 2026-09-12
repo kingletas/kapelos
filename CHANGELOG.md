@@ -29,6 +29,7 @@ The first version: a Docker Compose stack that runs a Magento 2.4 store, whether
 - `kapelos ci` runs the store's GitHub Actions workflows on this machine with act, downloaded once and checked against a checksum Kapelos records. Each job gets a copy of the store, so a workflow can't change your working tree, and a failed job leaves no container behind.
 - `kapelos info` lists every address, port and login, and `kapelos valkey` opens `valkey-cli`. OpenSearch and RabbitMQ's management page are published on loopback.
 - `kapelos test` runs the store's unit and integration tests, with the integration tests in a database, queue and search index of their own. `kapelos self-test` proves Kapelos end to end on a throwaway store.
+- `bin/kapelos` keeps the settings, the command list and the dispatch, and sources the rest from `lib/`: one file each for the plumbing, sites, getting a store, adopting one, the stack day to day, doctor and audit, the outside tools, your own commands, and Kapelos's own tests. `kapelos check` runs `shellcheck -a -x` so the findings inside those files are reported rather than skipped, and parses each of them under bash 3.2.
 - `bin/kapelos` runs under bash 3.2, the version macOS ships, and `kapelos check` holds it to that.
 - `docs/examples.md` has a recipe for each everyday task, a store's own `.kapelos` folder worked through, and commands of your own, from a first one to one that runs PHP inside the store.
 - RabbitMQ has a fixed hostname, so its queues survive `kapelos down`, `use` and a snapshot restore.

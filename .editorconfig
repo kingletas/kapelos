@@ -11,6 +11,12 @@ indent_size = 4
 [*.{yaml,yml}]
 indent_size = 2
 
+[*.sh]
+indent_size = 2
+
+[bin/kapelos]
+indent_size = 2
+
 [Makefile]
 indent_style = tab
 
