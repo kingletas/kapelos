@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Places real test orders in the store: kapelos orders [--count=N] [--items=N] [--interval=SECONDS]
+set -euo pipefail
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+  cat <<'USAGE'
+Usage: kapelos orders [OPTION...]
+
+Places orders the way the storefront does: a guest quote, real line items, an address, a
+shipping rate, a payment method, then QuoteManagement::submit(). The orders have items,
+totals and a grid row, and every observer and plugin on order placement runs.
+
+  --count=N       orders in a batch; a random 2 to 10 unless you say
+  --items=N       line items per order; a random 1 to 15 unless you say
+  --type=TYPE     configurable (the default) or simple
+  --interval=N    seconds between batches; without it, one batch and then it stops
+  --batches=N     stop after N batches; unlimited unless you say
+  --store=N       store id, 1 unless you say
+  --payment=CODE  payment method, checkmo unless you say
+  --shipping=CODE shipping method, flatrate_flatrate unless you say
+  --email=ADDRESS one address for every order; a different guest each time unless you say
+  --grid=0        don't sync sales_order_grid after each batch
+  --trace=1       print a stack trace for each order that fails
+
+Every order goes to a guest address ending in @example.test, so that is what to filter the
+admin grid on to find them. Nothing removes them again: a placed order is a real order.
+USAGE
+  exit 0
+fi
+
+: "${MAGENTO_SRC:?kapelos orders runs through kapelos, which tells it where the store is}"
+[[ ${DISPOSABLE:-no} == yes ]] ||
+  { echo "kapelos orders places real orders that nothing takes back, so it runs only on a site with DISPOSABLE=yes." >&2; exit 1; }
+
+here="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$MAGENTO_SRC/var/kapelos"
+cp "$here/lib/place-orders.php" "$MAGENTO_SRC/var/kapelos/place-orders.php"
+
+arguments=""
+[[ $# -eq 0 ]] || arguments="$(printf '%q ' "$@")"
+"$KAPELOS" shell <<SHELL
+php var/kapelos/place-orders.php $arguments
+SHELL

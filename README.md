@@ -176,6 +176,7 @@ The folders follow the usual Linux split between programs, settings and packages
 | `etc/` | The settings the containers read: `traefik/`, `nginx/`, `varnish/`, `mariadb/` and `php/`. Edit one and run `bin/kapelos restart <service>`. No rebuild needed. `etc/tls/` holds the certificate `bin/kapelos cert` issues, and `etc/sites/` holds one settings file per project |
 | `opt/php/`, `opt/audit/`, `opt/bluetir/`, `opt/drexbot/` | The images Kapelos builds: PHP, the audit tools, and the two browser suites. manipulus is built from its own Dockerfile on GitHub. The other services use stock images |
 | `var/stores/` | The stores Kapelos downloads for you, such as the demo. Ignored by git |
+| `share/commands/` | Working [commands of your own](docs/examples.md#your-own-commands) to use and change: place test orders, fill the order grid, time an admin page, read the mail the store sent, and more. `bin/kapelos commands add` installs them into a store |
 | `scripts/` | What `make install` and `make uninstall` run, and the check that proves them |
 | `docs/` | [From nothing to a storefront](docs/from-nothing.md), and [Examples](docs/examples.md): recipes for every command, a store's own `.kapelos` folder and commands of your own |
 
@@ -291,6 +292,8 @@ A store can carry its Kapelos settings in its own repository, in a `.kapelos` fo
 ├── compose.yaml     services or changes the store needs, merged over Kapelos's own
 └── commands/        your own commands: .kapelos/commands/reindex-feeds is kapelos reindex-feeds
 ```
+
+**Kapelos ships working commands to start from.** `bin/kapelos commands add` puts all of them in this store's `.kapelos/commands/`, with their helper files, and trusts them when there's nothing else in `.kapelos` you haven't read. `--user` puts them in `~/.config/kapelos/commands/` instead, where they follow you into every store. [Your own commands](docs/examples.md#your-own-commands) has the details.
 
 **`settings.env` may set only facts about the store**: `PHP_VERSION`, `NODE_VERSION` and the other `*_VERSION` settings, `INSTALL_SOURCEGUARDIAN`, `MAGENTO_NGINX_CONF`, `STORES`, `DEPLOY_LOCALES`, `MANIPULUS_THEME` and `AUDIT_PATHS`. It wins over the site's settings for those. It can't open ports, change passwords or name a folder on your machine, and Kapelos refuses the whole file, naming the line, if it tries. `MAGENTO_NGINX_CONF` has to be inside the store, such as `/app/.kapelos/nginx.conf`, which is how a store brings the nginx rules its own server runs.
 

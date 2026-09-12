@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# The largest tables in the store's database, and which are only logs: kapelos big-tables [COUNT]
+set -euo pipefail
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+  cat <<'USAGE'
+Usage: kapelos big-tables [COUNT]
+
+The biggest tables in the database, 25 of them unless you say otherwise, with the size on
+disk and roughly how many rows each holds. Run it after adopting a copy of a production
+database, when the question is why it takes so long to import and what is safe to lose.
+
+The KIND column says what each one is. "log" is history the store writes and never reads
+back: reports, visitor tracking, notifications, finished queue messages. "carts" is quotes,
+which matter on a live store and almost never in a copy of one.
+
+It changes nothing. Emptying a table is yours to decide and to type, because on a database
+you thought was a copy it is the kind of thing that cannot be undone.
+USAGE
+  exit 0
+fi
+
+count="${1:-25}"
+[[ $count =~ ^[0-9]+$ ]] || { echo "kapelos big-tables takes a number of tables." >&2; exit 2; }
+
+# kapelos db hands back tab-separated rows when it isn't talking to a terminal, so line them up.
+align() {
+  if command -v column >/dev/null; then column -t -s "$(printf '\t')"; else cat; fi
+}
+
+"$KAPELOS" db <<SQL | align
+SELECT
+    table_name AS 'TABLE',
+    CASE
+        WHEN table_name REGEXP '^(report_event|report_viewed|report_compared|customer_visitor|catalog_compare_item|adminnotification_inbox|cron_schedule|magento_logging|queue_message|session)' THEN 'log'
+        WHEN table_name REGEXP '^quote' THEN 'carts'
+        WHEN table_name REGEXP '_cl\$' THEN 'changelog'
+        WHEN table_name REGEXP '^(catalog_product_index|catalog_category_product_index|cataloginventory_stock_status|inventory_stock)' THEN 'index'
+        ELSE '-'
+    END AS 'KIND',
+    FORMAT(table_rows, 0) AS 'ROWS',
+    ROUND((data_length + index_length) / 1048576) AS 'MB',
+    ROUND(data_length / 1048576) AS 'DATA MB',
+    ROUND(index_length / 1048576) AS 'INDEX MB'
+FROM information_schema.tables
+WHERE table_schema = DATABASE()
+ORDER BY data_length + index_length DESC
+LIMIT $count;
+SQL
+
+echo
+"$KAPELOS" db <<'SQL' | tail -n +2 |
+SELECT
+    COUNT(*),
+    ROUND(SUM(data_length + index_length) / 1048576)
+FROM information_schema.tables
+WHERE table_schema = DATABASE();
+SQL
+  awk -F'\t' '{ printf "%s tables, %s MB in all.\n", $1, $2 }'

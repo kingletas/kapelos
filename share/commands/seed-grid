@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Fills sales_order_grid with rows to time the admin grid against: kapelos seed-grid [COUNT|remove]
+set -euo pipefail
+
+here="$(cd "$(dirname "$0")" && pwd)"
+action="${1:-500000}"
+
+if [[ $action == -h || $action == --help ]]; then
+  cat <<'USAGE'
+Usage: kapelos seed-grid [COUNT]
+       kapelos seed-grid remove
+
+Writes COUNT synthetic rows into sales_order_grid, half a million unless you say otherwise,
+so the admin order grid can be timed at a volume a real store reaches. The rows are grid rows
+only: there is no order behind them, which is the point, because inventing real orders would
+cost hours and change nothing the grid measures.
+
+Everything it writes is tagged. entity_id starts at 900000001 and every increment_id begins
+PERFSEED-, so `kapelos seed-grid remove` takes out exactly what was put in and nothing else.
+
+Time the grid afterwards with: kapelos profile grid
+USAGE
+  exit 0
+fi
+
+[[ ${DISPOSABLE:-no} == yes ]] ||
+  { echo "kapelos seed-grid writes rows into the store's database, so it runs only on a site with DISPOSABLE=yes." >&2; exit 1; }
+
+if [[ $action == remove ]]; then
+  echo "==> Removing the seeded rows"
+  "$KAPELOS" db <"$here/lib/unseed-grid.sql"
+  exit 0
+fi
+
+[[ $action =~ ^[0-9]+$ ]] || { echo "kapelos seed-grid takes a number of rows, or remove." >&2; exit 2; }
+[[ $action -ge 1 && $action -le 10000000 ]] || { echo "kapelos seed-grid takes between 1 and 10000000 rows." >&2; exit 2; }
+
+echo "==> Seeding $action rows into sales_order_grid"
+sed "s/seq_1_to_COUNT/seq_1_to_$action/" "$here/lib/seed-grid.sql" | "$KAPELOS" db
+echo "Take them out again with: kapelos seed-grid remove"

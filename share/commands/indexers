@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Every indexer's mode and state, and how far behind its changelog is: kapelos indexers
+set -euo pipefail
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+  cat <<'USAGE'
+Usage: kapelos indexers
+
+What `kapelos indexer:status` shows, plus the part it doesn't: how many changed rows are
+sitting in each scheduled indexer's changelog waiting for cron to pick them up. An indexer
+can read "valid" and still be showing the storefront yesterday's prices, because valid means
+nothing failed, not that it is up to date.
+
+Bring one up to date with: kapelos indexer:reindex <name>
+USAGE
+  exit 0
+fi
+
+: "${MAGENTO_SRC:?kapelos indexers runs through kapelos, which tells it where the store is}"
+here="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$MAGENTO_SRC/var/kapelos"
+cp "$here/lib/indexers.php" "$MAGENTO_SRC/var/kapelos/indexers.php"
+"$KAPELOS" shell <<<'php var/kapelos/indexers.php'

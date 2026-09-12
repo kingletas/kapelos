@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# What the store has emailed, read from Mailpit: kapelos mail [list|show ID|last|clear]
+set -euo pipefail
+
+command -v jq >/dev/null || { echo "kapelos mail reads Mailpit's API, so it needs jq. Install jq and try again." >&2; exit 1; }
+[[ ,${COMPOSE_PROFILES:-}, == *,mail,* ]] ||
+  { echo "This site doesn't run the bundled Mailpit: mail goes to ${SMTP_HOST:-your own catcher}:${SMTP_PORT:-1025}. Add mail to COMPOSE_PROFILES to use this." >&2; exit 1; }
+
+api="http://${BIND_ADDRESS:-127.0.0.1}:${MAIL_UI_PORT:-8025}/api/v1"
+action="${1:-list}"
+[[ $# -eq 0 ]] || shift
+
+ask() {
+  curl -fsS "$@" || { echo "Mailpit didn't answer at $api. Is the stack up?" >&2; exit 1; }
+}
+
+case "$action" in
+  list)
+    ask "$api/messages?limit=${1:-20}" |
+      jq -r '.messages[] | [.Created[0:19], (.To[0].Address // "-"), .Subject, .ID] | @tsv' |
+      awk -F'\t' 'BEGIN { printf "%-19s  %-34s  %-46s  %s\n", "WHEN", "TO", "SUBJECT", "ID" }
+                        { printf "%-19s  %-34s  %-46s  %s\n", $1, substr($2, 1, 34), substr($3, 1, 46), $4 }'
+    ;;
+  last | show)
+    id="${1:-}"
+    [[ $action != last ]] || id="$(ask "$api/messages?limit=1" | jq -r '.messages[0].ID // empty')"
+    [[ -n $id ]] || { echo "There is no message to show." >&2; exit 1; }
+    ask "$api/message/$id" | jq -r '
+      "From:    " + (.From.Address // "-"),
+      "To:      " + ((.To // []) | map(.Address) | join(", ")),
+      "Subject: " + .Subject,
+      "Date:    " + .Date,
+      "",
+      (if (.Text // "") != "" then .Text else "(this message is HTML only; open it at the Mailpit address in kapelos info)" end)'
+    ;;
+  clear)
+    curl -fsS -X DELETE "$api/messages" >/dev/null
+    echo "Mailpit is empty."
+    ;;
+  -h | --help)
+    cat <<'USAGE'
+Usage: kapelos mail [list [COUNT]]   what the store has sent, newest first
+       kapelos mail last            print the newest message
+       kapelos mail show ID         print one message, by the id list prints
+       kapelos mail clear           throw all of them away
+
+Every email the store sends is caught by Mailpit rather than delivered, so this is how to
+check an order confirmation or a password reset actually went out, and what it said, without
+opening a browser. kapelos info has the address if you would rather look at it there.
+USAGE
+    ;;
+  *)
+    echo "kapelos mail: no action called $action. Try: kapelos mail --help" >&2
+    exit 2
+    ;;
+esac

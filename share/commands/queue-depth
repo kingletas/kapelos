@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# How many messages are waiting in each RabbitMQ queue: kapelos queue-depth [--all]
+set -euo pipefail
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+  cat <<'USAGE'
+Usage: kapelos queue-depth [--all]
+
+Every queue with something in it, deepest first. Empty queues are left out unless you
+ask for --all, because on a healthy store almost all of them are empty and a list of
+zeroes is a list nobody reads twice.
+
+READY is waiting to be picked up and UNACKED has been picked up but not finished, so a
+number that sits in UNACKED and never moves is a consumer that has stopped rather than a
+backlog. `kapelos queues` is the other half of this: it checks every queue the store
+declares actually exists.
+USAGE
+  exit 0
+fi
+
+command -v jq >/dev/null || { echo "kapelos queue-depth reads RabbitMQ's API, so it needs jq. Install jq and try again." >&2; exit 1; }
+
+all=no
+[[ ${1:-} != --all ]] || all=yes
+
+api="http://${BIND_ADDRESS:-127.0.0.1}:${RABBITMQ_UI_PORT:-15672}/api/queues"
+queues="$(curl -fsS -u "${RABBITMQ_USER:-magento}:${RABBITMQ_PASSWORD:-}" "$api")" ||
+  { echo "RabbitMQ didn't answer at $api. Is the stack up?" >&2; exit 1; }
+
+printf '%s\n' "$queues" |
+  jq -r --arg all "$all" '
+    [.[] | select($all == "yes" or (.messages // 0) > 0)]
+    | sort_by(-(.messages // 0))
+    | .[] | [.name, (.messages // 0), (.messages_ready // 0), (.messages_unacknowledged // 0), (.consumers // 0)] | @tsv' |
+  awk -F'\t' '
+    BEGIN { printf "%-56s %9s %9s %9s %9s\n", "QUEUE", "MESSAGES", "READY", "UNACKED", "CONSUMERS" }
+    { total += $2; printf "%-56s %9d %9d %9d %9d\n", substr($1, 1, 56), $2, $3, $4, $5; rows++ }
+    END {
+      if (rows) { printf "%-56s %9d\n", "TOTAL", total }
+      else { print "Every queue is empty." }
+    }'

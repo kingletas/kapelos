@@ -156,6 +156,10 @@ ci: ## Run the store's GitHub Actions workflows with act — make ci ARGS="-j ph
 modules: ## The Kingletas modules — make modules, or make modules ARGS="add process-guard"
 	@$(KAPELOS) modules $(ARGS)
 
+.PHONY: commands
+commands: ## The commands Kapelos ships for you — make commands, or make commands ARGS="add orders"
+	@$(KAPELOS) commands $(ARGS)
+
 .PHONY: snapshot
 snapshot: ## Save or restore the database, search and queue — make snapshot ARGS="save clean"
 	@$(KAPELOS) snapshot $(ARGS)

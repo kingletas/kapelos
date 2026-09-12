@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Times an admin page and shows why each query cost what it did: kapelos profile grid|dashboard|product-form
+set -euo pipefail
+
+: "${MAGENTO_SRC:?kapelos profile runs through kapelos, which tells it where the store is}"
+here="$(cd "$(dirname "$0")" && pwd)"
+page="${1:-}"
+[[ $# -eq 0 ]] || shift
+
+usage() {
+  cat <<'USAGE'
+Usage: kapelos profile grid [PAGE_SIZE] [DATA_SOURCE] [SORT_COLUMN]
+       kapelos profile dashboard [STORE_ID]
+       kapelos profile product-form PRODUCT_ID [STORE_ID]
+
+Runs the page's own code in the PHP container and times each step, then prints the SQL it ran,
+the plan the database chose for it, the indexes on every table it touched and the server
+settings that steer those choices. A timing on its own can't tell a missing index from an
+optimizer that decided to sort the whole table, which is why the plan is printed next to it.
+
+  grid          the order grid, or any other listing. Listings sort on different columns, so
+                name one, or - for none: kapelos profile grid 20 cms_page_listing_data_source creation_time
+  dashboard     every block the admin dashboard renders, marked sync or ajax
+  product-form  every modifier behind the product edit form, slowest first
+
+This is the headless answer. For a line-by-line profile inside PHP, set XDEBUG_MODE=debug,profile
+in the site's settings and read the cachegrind file in a profiler instead.
+USAGE
+}
+
+case "$page" in
+  grid) script=profile-grid.php ;;
+  dashboard) script=profile-dashboard.php ;;
+  product-form) script=profile-product-form.php ;;
+  -h | --help | '')
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    echo "kapelos profile: no page called $page" >&2
+    exit 2
+    ;;
+esac
+
+mkdir -p "$MAGENTO_SRC/var/kapelos"
+cp "$here/lib/$script" "$MAGENTO_SRC/var/kapelos/$script"
+
+arguments=""
+[[ $# -eq 0 ]] || arguments="$(printf '%q ' "$@")"
+"$KAPELOS" shell <<SHELL
+php -d memory_limit=-1 var/kapelos/$script $arguments
+SHELL

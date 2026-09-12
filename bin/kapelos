@@ -22,6 +22,7 @@ ENV_FILE="${KAPELOS_ENV:-.env}"
 SITES_DIR=etc/sites
 STORES_DIR=var/stores
 MODULES_FILE=etc/modules.tsv
+SHARE_COMMANDS=share/commands
 AUDIT_CHECKS=etc/audit/checks.tsv
 
 usage() {
@@ -83,6 +84,9 @@ Working in the store
   modules [add|remove] [NAME...]
                          The Kingletas modules: which are installed, or add and remove them
   sample-data            Add Magento's sample products, for tools that need a catalogue
+  commands [add|remove] [NAME...] [--user] [-f]
+                         The commands Kapelos ships for you to use and change: which are
+                         installed, or put them in this store or in every store you work on
 
 Testing the running store
   bluetir [MODE] [ARGS...]
@@ -102,6 +106,7 @@ Kapelos itself
   self-test              Build a throwaway store and prove every feature works, then remove it
 
 Your commands: a file in the store's .kapelos/commands or in ~/.config/kapelos/commands is a command too.
+Kapelos ships seven to start from: kapelos commands add.
 Every command also runs through make: make up, make magento ARGS="cache:flush".
 A command with a colon is Magento's; Kapelos's own commands never have one.
 Set KAPELOS_ENV to use a settings file other than .env for one command.
@@ -268,11 +273,21 @@ project_trust_file() {
   printf '%s/var/trust/%s' "$KAPELOS_HOME" "$(printf '%s' "$1" | sha256_stdin)"
 }
 
-require_trusted() {
-  local store="$1"
+project_is_trusted() {
+  local store="$1" file
   project_has_code "$store" || return 0
-  [[ -f $(project_trust_file "$store") && $(cat "$(project_trust_file "$store")") == "$(project_code_hash "$store")" ]] ||
-    die "$store/.kapelos brings a compose file or commands that are new or changed since you last trusted them. They run with your permissions, so read them, then: kapelos trust $store"
+  file="$(project_trust_file "$store")"
+  [[ -f $file && $(cat "$file") == "$(project_code_hash "$store")" ]]
+}
+
+trust_project() {
+  mkdir -p "$KAPELOS_HOME/var/trust"
+  project_code_hash "$1" >"$(project_trust_file "$1")"
+}
+
+require_trusted() {
+  project_is_trusted "$1" ||
+    die "$1/.kapelos brings a compose file or commands that are new or changed since you last trusted them. They run with your permissions, so read them, then: kapelos trust $1"
 }
 
 cmd_trust() {
@@ -286,8 +301,7 @@ cmd_trust() {
   project_has_code "$store" || die "$store has no .kapelos/compose.yaml or .kapelos/commands, so there's nothing to trust"
   echo "From now on these run with your permissions, until one of them changes:"
   project_code_files "$store" | sed 's/^/  .kapelos\//'
-  mkdir -p "$KAPELOS_HOME/var/trust"
-  project_code_hash "$store" >"$(project_trust_file "$store")"
+  trust_project "$store"
   echo "Trusted."
 }
 
@@ -355,6 +369,257 @@ cmd_env() {
     "APP_HOST=$name.test" \
     "MAGENTO_BASE_URL=http://$name.test:8080/"
   echo "Wrote $SITES_DIR/$name.env. Set MAGENTO_SRC in it, then: kapelos use $name && kapelos up"
+}
+
+# --- the commands Kapelos ships for you ---
+
+user_commands_dir() {
+  printf '%s/kapelos/commands' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+shipped_commands() {
+  local file
+  for file in "$SHARE_COMMANDS"/*; do
+    if [[ -f $file ]]; then
+      basename "$file"
+    fi
+  done
+}
+
+# The comment on the line under the shebang, which is what kapelos help lists.
+command_summary() {
+  sed -n '2s/^# \{0,1\}//p' "$1"
+}
+
+# Which lib files a command needs is read out of the command itself, so there's no second list to fall behind.
+command_lib_files() {
+  local file name
+  for file in "$SHARE_COMMANDS"/lib/*; do
+    [[ -f $file ]] || continue
+    name="$(basename "$file")"
+    if grep -qF "$name" "$1"; then
+      printf '%s\n' "$name"
+    fi
+  done
+}
+
+# same when it's the file Kapelos ships, changed when you've edited it, - when it isn't there.
+command_state() {
+  if [[ ! -f $1/$2 ]]; then
+    printf -- '-'
+  elif cmp -s "$SHARE_COMMANDS/$2" "$1/$2"; then
+    printf 'same'
+  else
+    printf 'changed'
+  fi
+}
+
+# The store's folder unless you say --user, and yours when there's no store yet.
+commands_destination() {
+  local where="$1"
+  if [[ $where == user ]]; then
+    user_commands_dir
+    return
+  fi
+  [[ ! -f $ENV_FILE ]] || load_env
+  if [[ -n ${MAGENTO_SRC:-} ]]; then
+    printf '%s/.kapelos/commands' "$MAGENTO_SRC"
+  elif [[ $where == store ]]; then
+    die "there's no store to add them to yet: $ENV_FILE names no MAGENTO_SRC. Put them where every store sees them instead: kapelos commands add --user"
+  else
+    user_commands_dir
+  fi
+}
+
+# True when .kapelos holds nothing but the files Kapelos ships, so there's nothing in it you haven't read.
+commands_only_ours() {
+  local store="$1" file name
+  [[ ! -f $store/.kapelos/compose.yaml ]] || return 1
+  for file in "$store"/.kapelos/commands/*; do
+    [[ -e $file ]] || continue
+    name="$(basename "$file")"
+    if [[ -d $file ]]; then
+      [[ $name == lib ]] || return 1
+    else
+      cmp -s "$SHARE_COMMANDS/$name" "$file" || return 1
+    fi
+  done
+  for file in "$store"/.kapelos/commands/lib/*; do
+    [[ -e $file ]] || continue
+    cmp -s "$SHARE_COMMANDS/lib/$(basename "$file")" "$file" || return 1
+  done
+}
+
+# A store's commands run with your permissions, so they're trusted here only when nothing in .kapelos is unread.
+commands_retrust() {
+  local destination="$1" trusted_before="$2" store
+  [[ $destination == */.kapelos/commands ]] || return 0
+  store="${destination%/.kapelos/commands}"
+  if [[ $trusted_before == yes ]] || commands_only_ours "$store"; then
+    if project_has_code "$store"; then
+      trust_project "$store"
+      echo "  Trusted them for you: there's nothing in .kapelos you haven't read."
+    fi
+  else
+    echo "  Not trusted: something else in $store/.kapelos is new or changed since you last read it."
+    echo "  Read it, then: kapelos trust $store"
+  fi
+}
+
+commands_status() {
+  local user_dir store_dir="" name store="" you
+  user_dir="$(user_commands_dir)"
+  [[ ! -f $ENV_FILE ]] || load_env
+  [[ -z ${MAGENTO_SRC:-} ]] || store_dir="$MAGENTO_SRC/.kapelos/commands"
+
+  printf '  %-14s %-9s %-9s %s\n' Command Store You 'What it does'
+  while IFS= read -r name; do
+    store='-'
+    [[ -z $store_dir ]] || store="$(command_state "$store_dir" "$name")"
+    you="$(command_state "$user_dir" "$name")"
+    printf '  %-14s %-9s %-9s %s\n' "$name" "$store" "$you" "$(command_summary "$SHARE_COMMANDS/$name")"
+  done < <(shipped_commands)
+
+  echo
+  if [[ -n $store_dir ]]; then
+    echo "  Store is this store's .kapelos/commands, shared with everyone working on it."
+  fi
+  echo "  You is ${user_dir/#$HOME/\~}, which follows you into every store."
+  if [[ -n $store_dir ]]; then
+    echo "  Add all of them to this store: kapelos commands add        Or just yours: kapelos commands add --user"
+  else
+    echo "  There's no store here yet. Add all of them for yourself: kapelos commands add --user"
+  fi
+}
+
+commands_add() {
+  local destination="$1" force="$2" trusted_before=no name lib store=""
+  shift 2
+  [[ $destination != */.kapelos/commands ]] || store="${destination%/.kapelos/commands}"
+  if [[ -n $store && -d $store ]] && project_is_trusted "$store"; then
+    trusted_before=yes
+  fi
+
+  step "Adding ${#@} command(s) to $destination"
+  mkdir -p "$destination"
+  for name in "$@"; do
+    if [[ $(command_state "$destination" "$name") == changed && $force == no ]]; then
+      echo "  kept     $name, because the copy there isn't the one Kapelos ships. Replace it with: kapelos commands add $name -f"
+      continue
+    fi
+    cp "$SHARE_COMMANDS/$name" "$destination/$name"
+    chmod 0755 "$destination/$name"
+    while IFS= read -r lib; do
+      mkdir -p "$destination/lib"
+      if [[ -f $destination/lib/$lib ]] && ! cmp -s "$SHARE_COMMANDS/lib/$lib" "$destination/lib/$lib" && [[ $force == no ]]; then
+        echo "  kept     lib/$lib, which has been changed since it was added"
+      else
+        cp "$SHARE_COMMANDS/lib/$lib" "$destination/lib/$lib"
+      fi
+    done < <(command_lib_files "$SHARE_COMMANDS/$name")
+    echo "  added    $name"
+  done
+
+  commands_retrust "$destination" "$trusted_before"
+  echo "  kapelos help lists them, and each one takes -h."
+}
+
+commands_remove() {
+  local destination="$1" force="$2" trusted_before=no name lib store="" wanted
+  shift 2
+  [[ $destination != */.kapelos/commands ]] || store="${destination%/.kapelos/commands}"
+  if [[ -n $store && -d $store ]] && project_is_trusted "$store"; then
+    trusted_before=yes
+  fi
+  [[ -d $destination ]] || die "there's nothing in $destination to remove"
+
+  step "Removing command(s) from $destination"
+  for name in "$@"; do
+    if [[ ! -f $destination/$name ]]; then
+      echo "  not there  $name"
+      continue
+    fi
+    if [[ $(command_state "$destination" "$name") == changed && $force == no ]]; then
+      echo "  kept     $name, because it has been changed since it was added. Remove it anyway with: kapelos commands remove $name -f"
+      continue
+    fi
+    rm -f "$destination/$name"
+    echo "  removed  $name"
+  done
+
+  # A lib file goes when no command left in the folder names it, and only while it's still ours.
+  for lib in "$destination"/lib/*; do
+    [[ -f $lib ]] || continue
+    name="$(basename "$lib")"
+    wanted=no
+    for file in "$destination"/*; do
+      if [[ -f $file ]] && grep -qF "$name" "$file"; then
+        wanted=yes
+      fi
+    done
+    if [[ $wanted == no ]] && { [[ $force == yes ]] || cmp -s "$SHARE_COMMANDS/lib/$name" "$lib"; }; then
+      rm -f "$lib"
+      echo "  removed  lib/$name"
+    fi
+  done
+  rmdir "$destination/lib" 2>/dev/null || true
+  rmdir "$destination" 2>/dev/null || true
+
+  commands_retrust "$destination" "$trusted_before"
+}
+
+cmd_commands() {
+  local action=status
+  case "${1:-}" in
+    add | remove | status)
+      action="$1"
+      shift
+      ;;
+    '' | -*) ;;
+    *) die "kapelos commands shows them; kapelos commands add [NAME...] and kapelos commands remove [NAME...] change them" ;;
+  esac
+
+  local where="" force=no argument names=() selected=() name
+  while [[ $# -gt 0 ]]; do
+    argument="$1"
+    shift
+    case "$argument" in
+      --user) where=user ;;
+      --store) where=store ;;
+      -f | --force) force=yes ;;
+      -*) die "kapelos commands takes --user, --store and -f, not $argument" ;;
+      *) names+=("$argument") ;;
+    esac
+  done
+
+  if [[ $action == status ]]; then
+    commands_status
+    return
+  fi
+
+  local destination
+  destination="$(commands_destination "$where")"
+
+  if [[ ${#names[@]} -gt 0 ]]; then
+    selected=("${names[@]}")
+    for name in "${selected[@]}"; do
+      [[ -f $SHARE_COMMANDS/$name ]] || die "Kapelos doesn't ship a command called $name. kapelos commands lists the ones it does."
+    done
+  else
+    # With no names, add means all of them and remove means the ones that are actually there.
+    while IFS= read -r name; do
+      if [[ $action == add || -f $destination/$name ]]; then
+        selected+=("$name")
+      fi
+    done < <(shipped_commands)
+  fi
+
+  if [[ ${#selected[@]} -eq 0 ]]; then
+    echo "None of the commands Kapelos ships are in $destination."
+    return
+  fi
+
+  "commands_$action" "$destination" "$force" "${selected[@]}"
 }
 
 # --- docker compose ---
@@ -2626,7 +2891,7 @@ cmd_check() {
 
   CHECK_SCRATCH="$(mktemp -d)"
   trap 'rm -rf "$CHECK_SCRATCH"' EXIT
-  local scratch="$CHECK_SCRATCH"
+  local scratch="$CHECK_SCRATCH" kept listed
 
   write_env "$scratch/env" "MAGENTO_SRC=$scratch" "PROXY_NETWORK=proxy"
 
@@ -2689,8 +2954,23 @@ cmd_check() {
   cmd_trust "$scratch/store" >/dev/null
   [[ $(KAPELOS_ENV="$scratch/env-project" "$KAPELOS_HOME/bin/kapelos" hello there) == "hello there from $scratch/store" ]] ||
     die "a trusted .kapelos/commands file didn't run from the store's folder"
-  KAPELOS_ENV="$scratch/env-project" "$KAPELOS_HOME/bin/kapelos" help | grep -q 'hello *Says hello from the store' ||
-    die "kapelos help doesn't list the store's own commands"
+  listed="$(KAPELOS_ENV="$scratch/env-project" "$KAPELOS_HOME/bin/kapelos" help)"
+  grep -q 'hello *Says hello from the store' <<<"$listed" || die "kapelos help doesn't list the store's own commands"
+
+  echo "commands: the shipped ones install with their lib, keep a changed file, and are trusted when nothing else is unread"
+  rm -rf "$scratch/store/.kapelos/commands"
+  KAPELOS_ENV="$scratch/env-project" "$KAPELOS_HOME/bin/kapelos" commands add orders >/dev/null
+  [[ -x $scratch/store/.kapelos/commands/orders && -f $scratch/store/.kapelos/commands/lib/place-orders.php ]] ||
+    die "kapelos commands add didn't install the command and the lib file it names"
+  project_is_trusted "$(cd "$scratch/store" && pwd -P)" || die "kapelos commands add left the store untrusted"
+  printf '# changed\n' >>"$scratch/store/.kapelos/commands/orders"
+  # Read into a variable rather than piping: grep -q leaves early, and under pipefail the SIGPIPE reads as failure.
+  kept="$(KAPELOS_ENV="$scratch/env-project" "$KAPELOS_HOME/bin/kapelos" commands add orders)"
+  grep -q '^  kept ' <<<"$kept" || die "kapelos commands add overwrote a command that had been changed"
+  KAPELOS_ENV="$scratch/env-project" "$KAPELOS_HOME/bin/kapelos" commands remove orders -f >/dev/null
+  [[ ! -e $scratch/store/.kapelos/commands/lib/place-orders.php ]] ||
+    die "kapelos commands remove left behind a lib file nothing names any more"
+
   rm -rf "var/sites/check-project" "$(project_trust_file "$(cd "$scratch/store" && pwd -P)")"
 
   echo "kapelos: an unknown command is refused"
@@ -2703,13 +2983,21 @@ cmd_check() {
     set -e
     bash -n bin/kapelos
     bash bin/kapelos help >/dev/null
+    bash bin/kapelos commands >/dev/null
     KAPELOS_ENV=/tmp/no-such-file bash bin/kapelos info >/dev/null 2>&1 && exit 1
     bash bin/kapelos no-such-command >/dev/null 2>&1 && exit 1
     cp -r /kapelos /tmp/k && cd /tmp/k && rm -f .env && bash bin/kapelos env >/dev/null && grep -q "^DB_PASSWORD=.\{32\}$" .env
   ' || die "bin/kapelos failed under bash 3.2"
 
   echo "shellcheck"
-  shellcheck bin/kapelos packaging/*.sh
+  shellcheck bin/kapelos packaging/*.sh scripts/check-install scripts/install scripts/uninstall
+  local command
+  for command in share/commands/*; do
+    # The lib folder beside them holds PHP and SQL, which check-image parses instead.
+    if [[ -f $command ]]; then
+      shellcheck "$command"
+    fi
+  done
 
   echo "yamllint"
   yamllint --strict compose.yaml compose.proxy.yaml compose.adopt.yaml etc/traefik .github
@@ -2743,6 +3031,11 @@ cmd_check_image() {
     echo "SourceGuardian is loaded in the default image, where it should be off" >&2
     missing=1
   fi
+
+  echo "the PHP behind the example commands parses"
+  docker run --rm -v "$KAPELOS_HOME/share:/share:ro" kapelos-php:check \
+    sh -c 'for file in /share/commands/lib/*.php; do php -l "$file" >/dev/null || exit 1; done' ||
+    die "a file in share/commands/lib doesn't parse"
 
   [[ $missing -eq 0 ]] || exit 1
   echo "check-image: every extension is present"
@@ -2933,6 +3226,7 @@ main() {
     check) cmd_check ;;
     check-image) cmd_check_image ;;
     ci) cmd_ci "$@" ;;
+    commands) cmd_commands "$@" ;;
     composer) exec_php composer "$@" ;;
     connect) cmd_connect ;;
     cron) cmd_cron "$@" ;;

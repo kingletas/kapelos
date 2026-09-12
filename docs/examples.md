@@ -42,6 +42,7 @@ The examples type `kapelos`, put on your `PATH` with `make install` as the [READ
     - [Keep a queue consumer running](#keep-a-queue-consumer-running)
     - [Trust it](#trust-it)
 - [Your own commands](#your-own-commands)
+    - [The ones Kapelos ships](#the-ones-kapelos-ships)
     - [How a command works](#how-a-command-works)
     - [A first command: is everything up?](#a-first-command-is-everything-up)
     - [A new teammate's first hour, in one command](#a-new-teammates-first-hour-in-one-command)
@@ -579,6 +580,34 @@ That records their contents. Change any of them, or pull a change from a teammat
 ## Your own commands
 
 A command is an executable file. Put it in the store's `.kapelos/commands/` to share it with everyone on the store, or in `~/.config/kapelos/commands/` to have it in every store you work on.
+
+### The ones Kapelos ships
+
+`share/commands/` in the Kapelos folder holds working commands. Kapelos doesn't run them from there, and `kapelos commands` is what puts them where it does:
+
+```bash
+kapelos commands             # what there is, and where each one is installed
+kapelos commands add         # all of them, into the store you're working on
+kapelos commands add orders  # just that one
+kapelos commands add --user  # into ~/.config/kapelos/commands, so they follow you into every store
+kapelos commands remove      # take them out again
+```
+
+It brings each command's `lib/` files with it and takes them away again once nothing left names them, and it **trusts them for you when there's nothing else in `.kapelos` you haven't read**. A compose file or somebody else's command in the same folder means it won't, and it says so. **A file you've changed is left alone** by both `add` and `remove` until you say `-f`, because these are examples meant to be edited.
+
+| Command | What it does |
+|---|---|
+| `orders` | Places real orders through the quote and `QuoteManagement::submit()`, a batch at a time, so there's something in the admin to look at and something for the queues to carry |
+| `seed-grid` | Fills `sales_order_grid` with rows so the admin grid can be timed at a volume a real store reaches, and takes them out again |
+| `profile` | Times the order grid, the dashboard or the product form, and prints the plan the database chose for each query |
+| `mail` | Lists what the store has emailed and prints one message, without opening a browser |
+| `indexers` | Every indexer's mode and state, and how many changed rows are waiting in its changelog |
+| `big-tables` | The largest tables in the database, and which of them are only logs |
+| `queue-depth` | How many messages are sitting in each RabbitMQ queue |
+
+`orders` and `seed-grid` write to the store, so both refuse to run unless the site is `DISPOSABLE=yes`. `mail` and `queue-depth` read a JSON API, so both need `jq`.
+
+They're meant to be changed. Read one, take the half you need, and make it yours: from then on `kapelos commands` reports it as `changed` and leaves it alone.
 
 ### How a command works
 
