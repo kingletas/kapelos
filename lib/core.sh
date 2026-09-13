@@ -296,6 +296,20 @@ magento() {
   exec_php php bin/magento "$@"
 }
 
+# Compiling reads every class in the store, encoded ones included, and SourceGuardian
+# refuses to decode while Xdebug is loaded. The image carries a scan directory that is
+# every setting except Xdebug's, so the frontend containers keep their debugger.
+exec_php_no_xdebug() {
+  require_running php
+  local tty=(-T)
+  [[ -t 0 ]] && tty=()
+  compose exec "${tty[@]}" -e PHP_INI_SCAN_DIR=/usr/local/etc/php/conf.d php "$@"
+}
+
+magento_no_xdebug() {
+  exec_php_no_xdebug php bin/magento "$@"
+}
+
 # Magento empties generated/ whenever the module list changes, and a deployed store's
 # optimised class map names the classes that were in there. Composer trusts a class map
 # without checking, so the next command includes a file that is gone and the store dies
@@ -372,7 +386,11 @@ run_magento_command() {
   case " $CLEARS_GENERATED_CODE " in
     *" ${1:-} "*) clear_generated_for_module_change ;;
   esac
-  magento "$@" || status=$?
+  if [[ ${1:-} == setup:di:compile ]]; then
+    magento_no_xdebug "$@" || status=$?
+  else
+    magento "$@" || status=$?
+  fi
   autoload_repair
   case " $CLEARS_GENERATED_CODE " in
     *" ${1:-} "*) warn_if_uncompiled ;;

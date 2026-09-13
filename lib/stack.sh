@@ -280,7 +280,7 @@ cmd_deploy() {
   deploy_step "Turning on maintenance mode" magento maintenance:enable
   deploy_step "Installing packages without the development ones" exec_php composer install --no-dev --no-interaction
   deploy_step "Upgrading the database" magento setup:upgrade
-  deploy_step "Compiling dependency injection" exec_php php -d memory_limit=-1 bin/magento setup:di:compile
+  deploy_step "Compiling dependency injection" exec_php_no_xdebug php -d memory_limit=-1 bin/magento setup:di:compile
   # The class map is built after compiling, or it points at generated classes setup:upgrade just deleted.
   deploy_step "Optimising the autoloader" exec_php composer dump-autoload --optimize --no-dev
   deploy_step "Deploying static files for ${locales[*]}" magento setup:static-content:deploy -f "${locales[@]}"

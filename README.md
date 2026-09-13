@@ -355,6 +355,16 @@ The last one works because Magento accepts any unambiguous abbreviation, so `c:f
 
 If the stack isn't running, you get `php isn't running. Start the stack with: kapelos up`, not a Docker error.
 
+### Stores with SourceGuardian-encoded extensions
+
+SourceGuardian refuses to decode while a debugger extension is loaded, whatever `xdebug.mode`
+is set to, and `setup:di:compile` reads every class in the store. So compiling such a store with
+Xdebug loaded stops with `SourceGuardian Loader ... Error code [16]`.
+
+Kapelos keeps Xdebug's settings in a scan directory of their own. The PHP containers opt into it,
+so debugging works as it always did, and compiling leaves it out. Nothing to configure:
+`kapelos setup:di:compile` and the compile step inside `kapelos deploy` both do this.
+
 ### Changing the module list on a deployed store
 
 `module:enable`, `module:disable`, `module:uninstall`, `setup:upgrade` and `deploy:mode:set` all

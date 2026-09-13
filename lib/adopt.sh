@@ -278,6 +278,9 @@ cmd_adopt() {
     magento app:config:import --no-interaction
   fi
 
+  if [[ -n $encoded ]]; then
+    echo "        Compiling runs without Xdebug for this store, since SourceGuardian refuses to decode while a debugger extension is loaded."
+  fi
   local package file result
   for package in $encoded; do
     file="$(cd "$path" && { grep -rlI --include='*.php' -m 1 'sg_load(' "vendor/$package" "app/code/$package" 2>/dev/null || true; } | head -n 1)"

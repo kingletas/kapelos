@@ -33,6 +33,10 @@ RUN set -eux; \
     docker-php-ext-install -j"$(nproc)" bcmath ftp gd intl opcache pcntl pdo_mysql soap sockets xsl zip; \
     pecl install "redis-${REDIS_VERSION}" "xdebug-${XDEBUG_VERSION}"; \
     docker-php-ext-enable redis xdebug; \
+    # Xdebug lives on its own so a scan directory can leave it out. SourceGuardian refuses
+    # to decode while a debugger extension is loaded, and compiling reads every class.
+    mkdir -p "${PHP_INI_DIR}/xdebug.d"; \
+    mv "${PHP_INI_DIR}/conf.d/docker-php-ext-xdebug.ini" "${PHP_INI_DIR}/xdebug.d/"; \
     rm -rf /tmp/pear
 
 # The vendor publishes no checksum, so I trust this download on HTTPS alone, and leave it off unless asked for.
