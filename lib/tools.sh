@@ -75,8 +75,11 @@ manipulus_write() {
 }
 
 # The bundles live in pub/static, which a production setup:upgrade clears, so a deploy writes them again after the static files.
+# Switched off counts as not in use: the module's console commands go with it, so a
+# deploy that still called manipulus:integrity:refresh would stop on an unknown command.
 manipulus_in_use() {
-  [[ -f $MAGENTO_SRC/app/code/Manipulus/Bundles/registration.php && -f $(manipulus_plan_file) ]]
+  [[ -f $MAGENTO_SRC/app/code/Manipulus/Bundles/registration.php && -f $(manipulus_plan_file) ]] || return 1
+  ! grep -q "'Manipulus_Bundles' => 0" "$MAGENTO_SRC/app/etc/config.php" 2>/dev/null
 }
 
 # manipulus reads the static files a production deploy writes.
