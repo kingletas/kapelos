@@ -192,7 +192,14 @@ site_remove() {
     rm -f "$(project_trust_file "$code")"
     rm -rf "$code"
   fi
-  [[ $(readlink .env 2>/dev/null) != "$file" ]] || rm -f .env
+  # An adopt that stopped part way leaves .env as a plain file for the site it was
+  # building, so it has to go by what it names as well as by what it points at. Left
+  # behind, it makes the next adopt of the same name collide with itself.
+  if [[ $(readlink .env 2>/dev/null) == "$file" ]] ||
+    { [[ -f .env && ! -L .env ]] && [[ $(env_value .env COMPOSE_PROJECT_NAME) == "$project" ]]; }; then
+    rm -f .env
+    echo "Your .env was this site, so it is gone too. kapelos sites lists the rest."
+  fi
   rm -f "$file"
   echo "Removed $name."
 }
