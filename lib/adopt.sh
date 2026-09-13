@@ -79,6 +79,8 @@ write_adopted_env_php() {
     -e DB_NAME -e DB_USER -e DB_PASSWORD -e RABBITMQ_USER -e RABBITMQ_PASSWORD -e MAGENTO_ADMIN_URI -e MAGENTO_BASE_URL \
     -v "$MAGENTO_SRC/app/etc/env.php:/kapelos-in/env.php:ro" -v "$dir:/kapelos-out" \
     php php -- /kapelos-in/env.php "/kapelos-out/$(basename "$KAPELOS_ENV_PHP")"
+  [[ -s $KAPELOS_ENV_PHP ]] ||
+    die "Kapelos's env.php for the store wasn't written to $KAPELOS_ENV_PHP, so the adopt stopped here"
   chmod 600 "$KAPELOS_ENV_PHP"
 }
 
@@ -233,11 +235,14 @@ cmd_adopt() {
   set_env_value "$ENV_FILE" DB_NAME "$main"
   if [[ $php_version != "${PHP_VERSION:-8.4}" ]]; then
     set_env_value "$ENV_FILE" PHP_VERSION "$php_version"
-    load_env
-    step "Building PHP $php_version, which the store needs"
-    compose --progress quiet build php
   fi
   load_env
+
+  # The image is named for the site and takes the store's PHP version and its
+  # SourceGuardian setting as build arguments, so every site needs its own whatever the
+  # version, and it has to exist before the first thing that runs in a container.
+  step "Building PHP $php_version for this site"
+  compose --progress quiet build php
 
   step "Writing Kapelos's env.php for the store, which keeps its own"
   write_adopted_env_php

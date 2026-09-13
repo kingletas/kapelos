@@ -10,6 +10,19 @@ cmd_up() {
   other="$(running_projects | grep -vx "$current" | head -n 1 || true)"
   [[ -z $other ]] || die "$other is already running, and Kapelos runs one site at a time. Switch with kapelos use, or stop it with: docker compose -p $other down"
 
+  # An adopted site whose adopt stopped part way starts and serves its own env.php, which
+  # points at another stack's services, so the store is broken in a way nothing announces.
+  if [[ -n ${KAPELOS_ENV_PHP:-} ]]; then
+    # A site's project is always kapelos-<site>; see how adopt and env write it.
+    local site="${current#kapelos-}"
+    [[ -s ${KAPELOS_ENV_PHP} ]] ||
+      die "this site was adopted but Kapelos's env.php is missing from $KAPELOS_ENV_PHP, so the adopt didn't finish. Run kapelos adopt again, or remove the site with: kapelos site remove $site"
+    case ":${COMPOSE_FILE:-}:" in
+      *:compose.adopt.yaml:*) ;;
+      *) die "this site was adopted but COMPOSE_FILE doesn't include compose.adopt.yaml, so the store would run on its own env.php. The adopt didn't finish; run kapelos adopt again" ;;
+    esac
+  fi
+
   if ! compose up -d --wait; then
     local unhealthy
     unhealthy="$(compose ps --status running --format '{{.Service}} {{.Health}}' | awk '$2 == "unhealthy" { print $1 }' | tr '\n' ' ')"
