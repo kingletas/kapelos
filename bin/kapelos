@@ -172,7 +172,7 @@ main() {
     info) cmd_info ;;
     interactive) cmd_interactive ;;
     logs) compose logs -f "$@" ;;
-    magento) magento "$@" ;;
+    magento) run_magento_command "$@" ;;
     magento-install) cmd_magento_install ;;
     manipulus) cmd_manipulus "$@" ;;
     modules) cmd_modules "$@" ;;
@@ -192,7 +192,7 @@ main() {
     up) cmd_up ;;
     use) cmd_use "$@" ;;
     valkey) cmd_valkey "$@" ;;
-    *:*) magento "$command" "$@" ;;
+    *:*) run_magento_command "$command" "$@" ;;
     *)
       local file
       if file="$(custom_command_file "$command")"; then

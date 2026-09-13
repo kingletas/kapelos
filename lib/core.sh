@@ -296,6 +296,90 @@ magento() {
   exec_php php bin/magento "$@"
 }
 
+# Magento empties generated/ whenever the module list changes, and a deployed store's
+# optimised class map names the classes that were in there. Composer trusts a class map
+# without checking, so the next command includes a file that is gone and the store dies
+# on a warning about a Proxy class, which says nothing about the cause.
+autoload_is_stale() {
+  local root="${MAGENTO_SRC:-}" map
+  map="$root/vendor/composer/autoload_classmap.php"
+  [[ -n $root && -f $map ]] || return 1
+  compgen -G "$root/generated/code/*" >/dev/null && return 1
+  grep -q "generated/code" "$map"
+}
+
+# Rebuilds the class map without the generated classes, which is what makes the store
+# boot again. Production mode cannot generate a class on demand, so it also needs a
+# compile, and saying so is the difference between a fix and a half fix.
+autoload_repair() {
+  autoload_is_stale || return 0
+  compose ps --status running --services 2>/dev/null | grep -qx php || return 0
+
+  step "The class map names generated classes that are gone. Rebuilding it plain"
+  exec_php composer dump-autoload --no-interaction >/dev/null || return 0
+
+  if [[ "$(magento_mode 2>/dev/null)" == production ]]; then
+    echo "    The store is in production mode, so it also needs: kapelos setup:di:compile"
+  fi
+}
+
+# Said once, after the command rather than before it, because whether generated code is
+# missing is only worth reporting when something has just emptied it.
+warn_if_uncompiled() {
+  compgen -G "${MAGENTO_SRC:-}/generated/code/*" >/dev/null && return 0
+  [[ "$(magento_mode 2>/dev/null)" == production ]] || return 0
+  step "Generated code is empty and the store is in production mode. Compile it: kapelos setup:di:compile"
+}
+
+magento_mode() {
+  exec_quiet php php bin/magento deploy:mode:show 2>/dev/null |
+    sed -n 's/.*Current application mode: \([a-z]*\).*/\1/p'
+}
+
+# Magento clears generated/ partway through each of these and then carries on in the
+# same process, so the class map has to stop naming generated classes before they run.
+CLEARS_GENERATED_CODE="module:enable module:disable module:uninstall setup:upgrade deploy:mode:set"
+
+# The dangerous state: an optimised class map naming generated classes that are still
+# there. Nothing is broken yet, and the next command to empty generated/ breaks it.
+autoload_is_optimised() {
+  local root="${MAGENTO_SRC:-}" map
+  map="$root/vendor/composer/autoload_classmap.php"
+  [[ -n $root && -f $map ]] || return 1
+  compgen -G "$root/generated/code/*" >/dev/null || return 1
+  grep -q "generated/code" "$map"
+}
+
+# Clearing generated code from outside the command, and rebuilding the map without it,
+# leaves the command nothing to delete and nothing to race. Emptying it mid-run does not
+# work: the class map is plain by then, so Magento generates classes into the very
+# directories it is deleting, and the command stops on "Directory not empty".
+clear_generated_for_module_change() {
+  autoload_is_optimised || return 0
+  compose ps --status running --services 2>/dev/null | grep -qx php || return 0
+
+  step "This command clears generated code, so clearing it first and rebuilding the class map plain"
+  exec_php sh -c 'rm -rf generated/code generated/metadata' || true
+  exec_php composer dump-autoload --no-interaction >/dev/null || true
+}
+
+# Every Magento command a person types goes through here, so a command that clears
+# generated code finishes its work and leaves a store that still boots.
+run_magento_command() {
+  local status=0
+  load_env
+  autoload_repair
+  case " $CLEARS_GENERATED_CODE " in
+    *" ${1:-} "*) clear_generated_for_module_change ;;
+  esac
+  magento "$@" || status=$?
+  autoload_repair
+  case " $CLEARS_GENERATED_CODE " in
+    *" ${1:-} "*) warn_if_uncompiled ;;
+  esac
+  return "$status"
+}
+
 installed() {
   exec_quiet php test -f app/etc/env.php
 }

@@ -334,6 +334,9 @@ cmd_doctor() {
       done
       [[ $taken -eq 1 ]] || report_line pass "stopped, and its ports are free"
     fi
+    if autoload_is_stale; then
+      report_line WARN "the class map names generated classes that are gone, so the store won't boot. Fix it with: kapelos composer dump-autoload"
+    fi
     if (exec 3<>"/dev/tcp/127.0.0.1/${LIVERELOAD_PORT:-35729}") 2>/dev/null; then
       report_line note "port ${LIVERELOAD_PORT:-35729} is taken, so kapelos grunt watch can't publish LiveReload there. Set LIVERELOAD_PORT to another"
     fi

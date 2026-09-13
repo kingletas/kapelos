@@ -89,6 +89,20 @@ cmd_check() {
 
   rm -rf "var/sites/check-project" "$(project_trust_file "$(cd "$scratch/store" && pwd -P)")"
 
+  echo "autoload: a class map naming generated classes that are gone is spotted, and a healthy one is not"
+  local tree="$scratch/autoload"
+  mkdir -p "$tree/vendor/composer" "$tree/generated/code/Magento"
+  printf '<?php return array("X" => $baseDir . "/generated/code/X.php");\n' >"$tree/vendor/composer/autoload_classmap.php"
+  printf '<?php\n' >"$tree/generated/code/Magento/Thing.php"
+  MAGENTO_SRC="$tree" autoload_is_stale && die "a store with its generated code present was called stale"
+  MAGENTO_SRC="$tree" autoload_is_optimised || die "an optimised class map with generated code present wasn't spotted"
+  rm -rf "$tree/generated/code"
+  MAGENTO_SRC="$tree" autoload_is_stale || die "a class map naming generated classes that are gone wasn't spotted"
+  MAGENTO_SRC="$tree" autoload_is_optimised && die "a store with no generated code was called optimised"
+  printf '<?php return array();\n' >"$tree/vendor/composer/autoload_classmap.php"
+  MAGENTO_SRC="$tree" autoload_is_stale && die "a plain class map with no generated code was called stale"
+  MAGENTO_SRC=/nonexistent autoload_is_stale && die "a store that isn't there was called stale"
+
   echo "kapelos: an unknown command is refused"
   if "$KAPELOS_HOME/bin/kapelos" no-such-command >/dev/null 2>&1; then
     die "an unknown command exited 0"

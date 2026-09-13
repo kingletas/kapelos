@@ -355,6 +355,27 @@ The last one works because Magento accepts any unambiguous abbreviation, so `c:f
 
 If the stack isn't running, you get `php isn't running. Start the stack with: kapelos up`, not a Docker error.
 
+### Changing the module list on a deployed store
+
+`module:enable`, `module:disable`, `module:uninstall`, `setup:upgrade` and `deploy:mode:set` all
+empty `generated/`, and a deployed store's class map names the classes that were in there. Composer
+trusts a class map without checking, so without help those commands stop on a warning about a
+missing `Proxy` class, which says nothing about the cause, and on a production store `module:disable`
+would fail without writing `app/etc/config.php` at all: it looked like it ran, and nothing changed.
+
+Kapelos clears the generated code and rebuilds the class map plain before running one of those, so
+the command does its work, and reminds you to compile afterwards:
+
+```
+==> This command clears generated code, so clearing it first and rebuilding the class map plain
+The following modules have been disabled:
+- Vendor_Module
+==> Generated code is empty and the store is in production mode. Compile it: kapelos setup:di:compile
+```
+
+Any Magento command repairs a class map it finds already in that state, whatever left it there, and
+`kapelos doctor` reports it.
+
 ## Cron and queue consumers
 
 Magento's scheduled jobs don't run until you turn them on, because on a store you brought they use its real settings: its feeds, exports and emails to outside servers.
