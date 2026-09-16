@@ -3,7 +3,7 @@
 # drexbot, pinned to a commit on GitHub, on the Playwright image its browser version matches.
 FROM mcr.microsoft.com/playwright:v1.62.1-noble
 
-ARG DREXBOT_REF=68123cf398425e0c0fa50949417fde45ded86419
+ARG DREXBOT_REF=40a9f05155731450ed5c84ce38ea0a3d2a466080
 
 RUN set -eux; \
     git init --quiet /opt/drexbot; \
