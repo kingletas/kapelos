@@ -147,14 +147,20 @@ cmd_check_image() {
   docker build --quiet -t kapelos-php:check opt/php >/dev/null
   docker build --quiet -t kapelos-php:check-sourceguardian --build-arg INSTALL_SOURCEGUARDIAN=true opt/php >/dev/null
 
-  local modules ext missing=0
-  modules="$(docker run --rm kapelos-php:check php -m)"
+  # The containers add Xdebug's own scan directory, and compiling leaves it out, so both are checked.
+  local modules ext missing=0 scan=/usr/local/etc/php/conf.d:/usr/local/etc/php/xdebug.d
+  modules="$(docker run --rm -e PHP_INI_SCAN_DIR="$scan" kapelos-php:check php -m)"
   for ext in "${required[@]}"; do
     if ! grep -qix "$ext" <<<"$modules"; then
       echo "missing extension: $ext" >&2
       missing=1
     fi
   done
+
+  if docker run --rm kapelos-php:check php -m | grep -qix xdebug; then
+    echo "Xdebug loads without its scan directory, so compiling would load it too" >&2
+    missing=1
+  fi
 
   if ! docker run --rm kapelos-php:check-sourceguardian php -m | grep -qix sourceguardian; then
     echo "missing extension: SourceGuardian, in the image built with INSTALL_SOURCEGUARDIAN=true" >&2
