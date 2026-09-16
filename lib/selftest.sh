@@ -308,7 +308,7 @@ cmd_self_test() {
   verify "mail reaches Mailpit" mail_arrives
   verify "cache-reset empties Valkey" valkey_empty_after_reset
   verify "installing over an existing database is refused" install_refused
-  verify "the Kingletas modules install and enable" kingletas_modules_install
+  verify "the Kingletas modules install from their Composer repository and enable" kingletas_modules_install
   verify "site audit runs through, and a fresh store passes all but its dependencies" audit_passes_beyond_dependencies
   verify "a dump loads and connects into an empty database" store_survives_reimport "$scratch"
   verify "deploy reaches production mode" cmd_deploy
@@ -332,7 +332,8 @@ audit_passes_beyond_dependencies() {
 
 kingletas_modules_install() {
   modules_add
-  [[ $(modules_status | grep -c ' yes ') -eq $(module_rows | wc -l | tr -d ' ') ]]
+  [[ $(modules_status | grep -c ' yes ') -eq $(module_rows | wc -l | tr -d ' ') ]] || return 1
+  store_has_repository "$(repository_url kingletas)" && [[ -z $(legacy_module_repositories) ]]
 }
 
 not_debug_routed() {

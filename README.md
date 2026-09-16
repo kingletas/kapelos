@@ -115,6 +115,7 @@ Everything goes through one command, `bin/kapelos`. Run it on its own for the fu
 | `bin/kapelos use acme` | Switch to another project. See [Several projects](#several-projects) |
 | `bin/kapelos site remove acme` | Delete a site's containers, database, snapshots and files |
 | `bin/kapelos modules` | The Kingletas modules. See [The Kingletas modules](#the-kingletas-modules) |
+| `bin/kapelos repositories` | The Composer repositories Kapelos can add to a store. See [Composer repositories](#composer-repositories) |
 | `bin/kapelos site audit` | Vulnerable dependencies, credentials and unsafe settings. See [Auditing a site](#auditing-a-site) |
 | `bin/kapelos bluetir`, `bin/kapelos drexbot` | Browser tests against the store. See [Driving the store](#driving-the-store-with-bluetir-and-drexbot) |
 | `bin/kapelos ci` | The store's GitHub Actions workflows, run here with act. See [Running the store's CI](#running-the-stores-ci) |
@@ -415,7 +416,7 @@ bin/kapelos grunt watch      # Magento's grunt, with LiveReload on port 35729
 
 ## The Kingletas modules
 
-Kapelos can put five Magento modules into a store, straight from their GitHub repositories:
+Kapelos can put five Magento modules into a store, from the [Kingletas Composer repository](https://kingletas.github.io/packages):
 
 | Module | What it does | See what it's doing |
 |---|---|---|
@@ -434,7 +435,24 @@ bin/kapelos modules remove                   # take them out again
 
 `demo` adds all five, and `interactive` asks. Kapelos never adds them to a store you brought yourself unless you run `modules add`.
 
-`add` puts their repositories in the store's `composer.json`, runs `composer require`, enables them and runs `setup:upgrade`. `remove` undoes each of those steps, down to taking the repositories back out when nothing of theirs is left. The list lives in `etc/modules.tsv`.
+`add` puts one repository in the store's `composer.json`, runs `composer require`, enables them and runs `setup:upgrade`. `remove` undoes each of those steps, down to taking the repository back out when nothing of theirs is left. The list lives in `etc/modules.tsv`.
+
+A store that got the modules from an older Kapelos has one GitHub entry per module in its `composer.json`. The next `modules add` swaps those for the one repository and leaves the store's other repositories alone.
+
+### Composer repositories
+
+The Kingletas repository is also there for installing a module by hand, the way you would in any Composer project:
+
+```bash
+bin/kapelos repositories                     # the repositories Kapelos knows, and which the store uses
+bin/kapelos repositories packages kingletas  # what a repository serves
+bin/kapelos repositories add kingletas       # put it in the store's composer.json
+bin/kapelos composer require kingletas/module-section-policy
+```
+
+Its dependencies come with it, so the last line also brings in `module-foundation` and `module-logger`. Enable the modules and run `setup:upgrade` yourself, or use `modules add`, which does both.
+
+`repositories remove` won't take a repository out while the store still has packages from it, because the next `composer install` would fail. The list lives in `etc/repositories.tsv`, one name and https address per row.
 
 ## Emptying every cache
 

@@ -22,6 +22,7 @@ ENV_FILE="${KAPELOS_ENV:-.env}"
 SITES_DIR=etc/sites
 STORES_DIR=var/stores
 MODULES_FILE=etc/modules.tsv
+REPOSITORIES_FILE=etc/repositories.tsv
 SHARE_COMMANDS=share/commands
 AUDIT_CHECKS=etc/audit/checks.tsv
 SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
@@ -111,6 +112,9 @@ Working in the store
                          Node for the front end, at the store's root; NODE_VERSION picks the version
   modules [add|remove] [NAME...]
                          The Kingletas modules: which are installed, or add and remove them
+  repositories [add|remove|packages] [NAME...]
+                         The Composer repositories Kapelos knows: which the store uses, or add
+                         and remove them, or list the packages one serves
   sample-data            Add Magento's sample products, for tools that need a catalogue
   commands [add|remove] [NAME...] [--user] [-f]
                          The commands Kapelos ships for you to use and change: which are
@@ -179,6 +183,7 @@ main() {
     node | npm | npx | grunt) cmd_node "$command" "$@" ;;
     ps) compose ps "$@" ;;
     queues) cmd_queues ;;
+    repositories) cmd_repositories "$@" ;;
     restart) compose restart "$@" ;;
     sample-data) cmd_sample_data ;;
     self-test) cmd_self_test ;;

@@ -1,0 +1,3 @@
+# Composer repositories Kapelos can add to a store. A row in modules.tsv names the one its package comes from.
+# name	url	what it serves
+kingletas	https://kingletas.github.io/packages	The Kingletas Magento modules, every public release

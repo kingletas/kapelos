@@ -174,6 +174,158 @@ module_rows() {
   grep -vE '^[[:space:]]*(#|$)' "$MODULES_FILE"
 }
 
+repository_rows() {
+  grep -vE '^[[:space:]]*(#|$)' "$REPOSITORIES_FILE"
+}
+
+# The address of a repository Kapelos knows, refusing a row that isn't a plain name and an https address.
+repository_url() {
+  local url
+  url="$(repository_rows | awk -F'\t' -v n="$1" '$1 == n { print $2 }')"
+  [[ -n $url ]] || die "Kapelos knows no Composer repository called $1. kapelos repositories lists them"
+  [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ && $url =~ ^https://[A-Za-z0-9./_-]+$ ]] ||
+    die "$REPOSITORIES_FILE has a row for $1 that isn't a plain name and an https address"
+  printf '%s' "$url"
+}
+
+# Every repository in the store's composer.json as name, type and url, whichever form the file uses.
+store_repositories() {
+  exec_quiet php php -r '
+    $json = json_decode((string) @file_get_contents("composer.json"), true) ?: [];
+    foreach ($json["repositories"] ?? [] as $key => $repository) {
+        if (!is_array($repository)) {
+            continue;
+        }
+        $name = $repository["name"] ?? (is_string($key) ? $key : "");
+        printf("%s\t%s\t%s\n", $name, $repository["type"] ?? "", $repository["url"] ?? "");
+    }' </dev/null
+}
+
+store_has_repository() {
+  store_repositories | awk -F'\t' -v u="$1" '$2 == "composer" && $3 == u { found = 1 } END { exit !found }'
+}
+
+# The package names a repository says it serves, read from its packages.json.
+repository_packages() {
+  local url
+  url="$(repository_url "$1")"
+  exec_quiet php php -r '
+    $json = json_decode((string) @file_get_contents($argv[1] . "/packages.json"), true);
+    if (!is_array($json) || !isset($json["available-packages"])) {
+        fwrite(STDERR, "kapelos: " . $argv[1] . " did not answer with a package list\n");
+        exit(1);
+    }
+    foreach ($json["available-packages"] as $package) {
+        echo $package, "\n";
+    }' "$url" </dev/null
+}
+
+repository_add() {
+  local name="$1" url
+  url="$(repository_url "$name")"
+  store_has_repository "$url" && return
+  step "Adding the $name Composer repository, $url"
+  exec_quiet php composer config "repositories.$name" "{\"type\":\"composer\",\"url\":\"$url\"}" </dev/null
+}
+
+repository_unset() {
+  store_has_repository "$(repository_url "$1")" || return 0
+  step "Removing the $1 Composer repository"
+  exec_quiet php composer config --unset "repositories.$1" </dev/null
+}
+
+# Only the one-per-module GitHub entries Kapelos itself used to write, so a store's own entries are never touched.
+legacy_module_repositories() {
+  local keys
+  keys="$(module_rows | awk -F'\t' '{ key = $1; sub("/", "-", key); print key }')"
+  store_repositories | awk -F'\t' -v keys="$keys" '
+    BEGIN { n = split(keys, list, "\n"); for (i = 1; i <= n; i++) wanted[list[i]] = 1 }
+    $2 == "vcs" && ($1 in wanted) && index($3, "https://github.com/kingletas/") == 1 { print $1 }'
+}
+
+remove_legacy_module_repositories() {
+  local legacy key
+  legacy="$(legacy_module_repositories)"
+  [[ -n $legacy ]] || return 0
+  step "Taking out the GitHub repositories Kapelos added one module at a time"
+  while IFS= read -r key; do
+    exec_quiet php composer config --unset "repositories.$key" </dev/null
+  done <<<"$legacy"
+}
+
+repositories_status() {
+  local name url description used
+  printf '  %-12s %-8s %s\n' "Name" "In use" "Address"
+  while IFS=$'\t' read -r name url description; do
+    url="$(repository_url "$name")"
+    used=no
+    store_has_repository "$url" && used=yes
+    printf '  %-12s %-8s %s  (%s)\n' "$name" "$used" "$url" "$description"
+  done < <(repository_rows)
+}
+
+# The named repositories, or every one Kapelos knows when none is named.
+selected_repositories() {
+  if [[ $# -eq 0 ]]; then
+    repository_rows | cut -f1
+    return
+  fi
+  local name
+  for name in "$@"; do
+    repository_url "$name" >/dev/null
+    printf '%s\n' "$name"
+  done
+}
+
+# Refuses while anything installed came from the repository, so a later composer install can still resolve.
+repositories_remove() {
+  local name names url installed served
+  names="$(selected_repositories "$@")"
+  installed="$(exec_quiet php php -r '
+    $installed = json_decode((string) @file_get_contents("vendor/composer/installed.json"), true) ?: [];
+    foreach ($installed["packages"] ?? $installed as $package) {
+        echo $package["name"], "\n";
+    }' </dev/null)"
+  while IFS= read -r name; do
+    url="$(repository_url "$name")"
+    if ! store_has_repository "$url"; then
+      echo "The store doesn't use $name."
+      continue
+    fi
+    served="$(repository_packages "$name")" || die "couldn't read what $name serves, so it stays until that can be checked"
+    if awk 'NR == FNR { if ($0 != "") served[$0] = 1; next } ($0 in served) { found = 1 } END { exit !found }' \
+      <(printf '%s\n' "$served") <(printf '%s\n' "$installed"); then
+      die "the store still has packages from $name. Take them out first: kapelos modules remove"
+    fi
+    repository_unset "$name"
+  done <<<"$names"
+}
+
+cmd_repositories() {
+  local action="${1:-status}" name names
+  [[ $# -gt 0 ]] && shift
+  load_env
+  require_running php
+  case "$action" in
+    status) repositories_status ;;
+    add)
+      names="$(selected_repositories "$@")"
+      while IFS= read -r name; do
+        repository_add "$name"
+      done <<<"$names"
+      echo "Require a package from it with: kapelos composer require VENDOR/PACKAGE"
+      ;;
+    remove) repositories_remove "$@" ;;
+    packages)
+      names="$(selected_repositories "$@")"
+      while IFS= read -r name; do
+        repository_packages "$name"
+      done <<<"$names"
+      ;;
+    *) die "kapelos repositories shows them; kapelos repositories add|remove|packages [NAME...] uses them" ;;
+  esac
+}
+
 # The rows named on the command line by package or short name, or every module when none is.
 selected_module_rows() {
   local name found
@@ -211,12 +363,13 @@ modules_status() {
 }
 
 modules_add() {
-  local rows package module version role repository requires=() modules=()
+  local rows repositories name package module version role repository requires=() modules=()
   rows="$(selected_module_rows "$@")"
-  step "Adding the Kingletas repositories to composer.json"
-  while IFS=$'\t' read -r package module version role repository; do
-    exec_quiet php composer config "repositories.${package/\//-}" "{\"type\":\"vcs\",\"url\":\"$repository\",\"no-api\":true}" </dev/null
-  done < <(module_rows)
+  repositories="$(module_rows | cut -f5 | sort -u)"
+  while IFS= read -r name; do
+    repository_add "$name"
+  done <<<"$repositories"
+  remove_legacy_module_repositories
   while IFS=$'\t' read -r package module version role repository; do
     requires+=("$package:$version")
     modules+=("$module")
@@ -260,15 +413,16 @@ modules_remove() {
   step "Removing ${packages[*]}"
   exec_php composer remove --no-interaction "${packages[@]}" </dev/null
 
-  local any=0
-  while IFS=$'\t' read -r package module version role repository; do
+  local any=0 name
+  while IFS=$'\t' read -r package _; do
     package_installed "$package" && any=1
   done < <(module_rows)
   if [[ $any -eq 0 ]]; then
-    step "No Kingletas package is left, so their repositories come out of composer.json too"
-    while IFS=$'\t' read -r package module version role repository; do
-      exec_quiet php composer config --unset "repositories.${package/\//-}" </dev/null
-    done < <(module_rows)
+    step "No Kingletas package is left, so their repository comes out of composer.json too"
+    remove_legacy_module_repositories
+    while IFS= read -r name; do
+      repository_unset "$name"
+    done < <(module_rows | cut -f5 | sort -u)
   fi
   magento setup:upgrade
   cmd_cache_reset

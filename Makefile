@@ -156,6 +156,10 @@ ci: ## Run the store's GitHub Actions workflows with act — make ci ARGS="-j ph
 modules: ## The Kingletas modules — make modules, or make modules ARGS="add process-guard"
 	@$(KAPELOS) modules $(ARGS)
 
+.PHONY: repositories
+repositories: ## The Composer repositories Kapelos knows: make repositories, or make repositories ARGS="packages kingletas"
+	@$(KAPELOS) repositories $(ARGS)
+
 .PHONY: commands
 commands: ## The commands Kapelos ships for you — make commands, or make commands ARGS="add orders"
 	@$(KAPELOS) commands $(ARGS)
