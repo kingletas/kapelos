@@ -45,6 +45,8 @@ SELF_TEST_FAILED=0
 . "$KAPELOS_HOME/lib/adopt.sh"
 # shellcheck source=lib/stack.sh
 . "$KAPELOS_HOME/lib/stack.sh"
+# shellcheck source=lib/scale.sh
+. "$KAPELOS_HOME/lib/scale.sh"
 # shellcheck source=lib/checks.sh
 . "$KAPELOS_HOME/lib/checks.sh"
 # shellcheck source=lib/tools.sh
@@ -91,6 +93,10 @@ The stack
   doctor                 Check this machine and this site: tools, memory, disk, ports, names, versions
   build                  Build the PHP image
   cert                   Issue a trusted certificate for APP_HOST with mkcert, and serve it
+  scale [web=N] [replica=N] [-y]
+                         Run the site on 1 to 4 web servers, each with its own copy of the code, and
+                         with 0 or 1 database replica; with nothing after it, show the current shape
+  scale refresh|reseed   Copy the code to the other web servers again, or the database to the replica
 
 Working in the store
   magento-install        Install Magento into an empty database
@@ -159,7 +165,7 @@ main() {
     check-image) cmd_check_image ;;
     ci) cmd_ci "$@" ;;
     commands) cmd_commands "$@" ;;
-    composer) exec_php composer "$@" ;;
+    composer) cmd_composer "$@" ;;
     connect) cmd_connect ;;
     cron) cmd_cron "$@" ;;
     db) cmd_db "$@" ;;
@@ -186,6 +192,7 @@ main() {
     repositories) cmd_repositories "$@" ;;
     restart) compose restart "$@" ;;
     sample-data) cmd_sample_data ;;
+    scale) cmd_scale "$@" ;;
     self-test) cmd_self_test ;;
     shell) exec_php bash ;;
     site) cmd_site "$@" ;;

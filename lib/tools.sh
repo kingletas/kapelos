@@ -436,8 +436,8 @@ cmd_modules() {
   require_running php
   case "$action" in
     status) modules_status ;;
-    add) modules_add "$@" ;;
-    remove) modules_remove "$@" ;;
+    add) modules_add "$@" && scale_refresh ;;
+    remove) modules_remove "$@" && scale_refresh ;;
     *) die "kapelos modules shows them; kapelos modules add [NAME...] and kapelos modules remove [NAME...] change them" ;;
   esac
 }

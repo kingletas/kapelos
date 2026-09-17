@@ -23,16 +23,34 @@ cmd_up() {
     esac
   fi
 
-  if ! compose up -d --wait; then
+  scale_before_up
+  # A web server or replica scaled away is an orphan, and goes.
+  if ! compose up -d --wait --remove-orphans; then
     local unhealthy
     unhealthy="$(compose ps --status running --format '{{.Service}} {{.Health}}' | awk '$2 == "unhealthy" { print $1 }' | tr '\n' ' ')"
     [[ -n $unhealthy ]] || exit 1
     echo "kapelos: $unhealthy reported unhealthy; restarting and waiting once more" >&2
     # shellcheck disable=SC2086 # one word per service
     compose restart $unhealthy
-    compose up -d --wait
+    compose up -d --wait --remove-orphans
   fi
+  scale_after_up
   echo "Store: ${MAGENTO_BASE_URL:-http://localhost:8080/}  ·  kapelos info shows everything else"
+}
+
+# Composer changes the code on server 1, so every other server gets the new code. Commands that only read don't copy.
+cmd_composer() {
+  local status=0 first=""
+  load_env
+  exec_php composer "$@" || status=$?
+  for first in "$@"; do
+    [[ $first == -* ]] || break
+  done
+  case "$first" in
+    '' | -* | about | audit | browse | check-platform-reqs | config | depends | diagnose | fund | help | home | licenses | list | outdated | prohibits | search | show | status | suggests | validate | why | why-not) ;;
+    *) [[ $status -ne 0 ]] || scale_refresh ;;
+  esac
+  return "$status"
 }
 
 cmd_debug() {
@@ -138,7 +156,9 @@ cmd_snapshot() {
         step "Restoring $volume"
         copy_volume "${COMPOSE_PROJECT_NAME}_snapshot-$name-$volume" "${COMPOSE_PROJECT_NAME}_$volume"
       done
-      cmd_up
+      # The restored database has a different history from the one the replica follows, so it's copied again.
+      SCALE_RESEED_NEXT=yes cmd_up
+      [[ $(scale_replicas) -eq 0 ]] || scale_seed_replica
       cmd_cache_reset
       echo "Restored $name."
       ;;
@@ -277,7 +297,7 @@ cmd_deploy() {
   read -r -a locales <<<"${DEPLOY_LOCALES:-en_US}"
   [[ ${#locales[@]} -gt 0 ]] || locales=(en_US)
 
-  deploy_step "Turning on maintenance mode" magento maintenance:enable
+  deploy_step "Turning on maintenance mode" magento_on_every_server maintenance:enable
   deploy_step "Installing packages without the development ones" exec_php composer install --no-dev --no-interaction
   deploy_step "Upgrading the database" magento setup:upgrade
   deploy_step "Compiling dependency injection" exec_php_no_xdebug php -d memory_limit=-1 bin/magento setup:di:compile
@@ -289,8 +309,9 @@ cmd_deploy() {
     deploy_step "Refreshing the integrity hashes checkout checks the bundles against" magento manipulus:integrity:refresh
   fi
   deploy_step "Switching to production mode" magento deploy:mode:set production --skip-compilation
+  [[ $(scale_web) -eq 1 ]] || deploy_step "Copying the release to every other web server" scale_refresh
   deploy_step "Emptying every cache" cmd_cache_reset
-  deploy_step "Turning off maintenance mode" magento maintenance:disable
+  deploy_step "Turning off maintenance mode" magento_on_every_server maintenance:disable
   echo "Deployed. The store is in production mode; kapelos develop goes back."
 }
 
@@ -301,8 +322,9 @@ cmd_develop() {
   exec_php composer install --no-interaction
   step "Switching to developer mode"
   magento deploy:mode:set developer
+  scale_refresh
   step "Turning off maintenance mode"
-  magento maintenance:disable
+  magento_on_every_server maintenance:disable
   cmd_cache_reset
   echo "Back in developer mode."
 }
@@ -361,6 +383,17 @@ EOF
   Valkey       kapelos valkey cache  ·  kapelos valkey session   (not published outside the stack)
   OpenSearch   http://$bind:${OPENSEARCH_PORT:-9200}
   RabbitMQ     http://$bind:${RABBITMQ_UI_PORT:-15672}  user ${RABBITMQ_USER:-magento}, password ${RABBITMQ_PASSWORD:-not set}
+EOF
+  if scaled; then
+    local n servers
+    servers="web-1 http://$bind:$(scale_port 1)/"
+    for n in $(scale_extra_servers); do
+      servers="$servers  ·  web-$n http://$bind:$(scale_port "$n")/"
+    done
+    echo "  Servers      $servers"
+    [[ $(scale_replicas) -eq 0 ]] || echo "  Replica      db-replica, connection replica in env.php  ·  kapelos scale shows how it's doing"
+  fi
+  cat <<EOF
 
   Xdebug       listen on port 9003, and map /app to ${MAGENTO_SRC:-your Magento folder}
                the browser extension's cookie or ?XDEBUG_TRIGGER=1 sends a request to the debugging PHP

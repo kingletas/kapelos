@@ -46,6 +46,7 @@ load_env() {
   done <"$ENV_FILE"
   load_project_settings
   derive_settings
+  derive_scale
 }
 
 project_value_ok() {
@@ -247,6 +248,7 @@ compose() {
     require_trusted "$MAGENTO_SRC"
     files="$files:$MAGENTO_SRC/.kapelos/compose.yaml"
   fi
+  [[ -z ${KAPELOS_SCALE_FILE:-} ]] || files="$files:$KAPELOS_SCALE_FILE"
   local profiles="${COMPOSE_PROFILES:-}"
   [[ ${CRON:-no} != yes ]] || profiles="${profiles:+$profiles,}cron"
   # Down skips a service whose profile was switched off after it started, so down runs with every profile on.

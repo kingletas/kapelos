@@ -82,6 +82,10 @@ down: ## Stop everything, keeping the database and search index
 restart: ## Restart services after editing etc/ — make restart ARGS="php"
 	@$(KAPELOS) restart $(ARGS)
 
+.PHONY: scale
+scale: ## More web servers and a database replica, or back to one — make scale ARGS="web=2 replica=1"
+	@$(KAPELOS) scale $(ARGS)
+
 .PHONY: ps
 ps: ## What is running, and whether it is healthy
 	@$(KAPELOS) ps

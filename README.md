@@ -29,6 +29,7 @@ A *kapelos* was the small shopkeeper of an ancient Greek town. His bigger siblin
 - [Emptying every cache](#emptying-every-cache)
 - [Snapshots and dumps](#snapshots-and-dumps)
 - [Rehearsing a deployment](#rehearsing-a-deployment)
+- [More web servers and a database replica](#more-web-servers-and-a-database-replica)
 - [Running the store's tests](#running-the-stores-tests)
 - [Auditing a site](#auditing-a-site)
 - [Driving the store with bluetir and drexbot](#driving-the-store-with-bluetir-and-drexbot)
@@ -104,6 +105,7 @@ Everything goes through one command, `bin/kapelos`. Run it on its own for the fu
 | `bin/kapelos debug cache:flush` | Run a Magento command with Xdebug, connected to your IDE |
 | `bin/kapelos cert` | Issue a trusted HTTPS certificate with mkcert |
 | `bin/kapelos deploy` | Rehearse a production deployment. `bin/kapelos develop` goes back |
+| `bin/kapelos scale web=2 replica=1` | Run the site on two web servers with a database replica. See [More web servers and a database replica](#more-web-servers-and-a-database-replica) |
 | `bin/kapelos composer install` | Run Composer |
 | `bin/kapelos db` | A MariaDB prompt on the store's database. `db dump` writes a gzipped dump |
 | `bin/kapelos snapshot save clean` | Save the database, search and queue; `snapshot restore clean` puts them back. See [Snapshots and dumps](#snapshots-and-dumps) |
@@ -200,6 +202,7 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
 | `CRON` | `no` | `yes` runs Magento's scheduled jobs. See [Cron and queue consumers](#cron-and-queue-consumers) |
+| `WEB_SERVERS`, `DB_REPLICAS` | `1`, `0` | How many web servers the site runs and whether its database has a replica. Change them with `bin/kapelos scale`. See [More web servers and a database replica](#more-web-servers-and-a-database-replica) |
 | `DEPLOY_LOCALES` | `en_US` | The languages `bin/kapelos deploy` builds static files for, separated by spaces |
 | `PHP_VERSION` | `8.4` | And one `*_VERSION` per service, `NODE_VERSION` included. The defaults are what the newest Magento release supports, and `etc/magento-versions.tsv` lists the versions for each release: `adopt` uses the store's row and `doctor` checks against it. `OPENSEARCH_VERSION` is a full release, such as `3.6.0`, because OpenSearch publishes no minor tags |
 | `COMPOSE_FILE` | `compose.yaml` | Which layers make up the stack |
@@ -522,6 +525,41 @@ That reinstalls the development packages, switches to developer mode, which clea
 
 This rehearses the Magento steps. The rehearsal isn't a copy of production: PHP keeps its development settings, so OPcache still notices changed files and Xdebug is still installed.
 
+## More web servers and a database replica
+
+Some things only show up on a store that runs like production: more than one web server, each with its own copy of the code, and a database replica. A cache that one server fills and another reads, a module that keys something on the server's name, a query that should go to the replica. To run the site in that shape:
+
+```bash
+bin/kapelos scale web=2 replica=1
+bin/kapelos scale                    # shows the shape, each server's copy and how replication is doing
+bin/kapelos scale web=1 replica=0    # back to the ordinary site; asks first, -y doesn't
+```
+
+`web` is 1 to 4 servers and `replica` is 0 or 1. The site has to be running. `scale` saves the shape in the site's settings as `WEB_SERVERS` and `DB_REPLICAS`, so `up`, `down` and `use` keep it until you change it.
+
+**What you get with `web=2 replica=1`:**
+
+- **Server 1, `web-1`, runs the store's folder**, exactly as now. Server 2, `web-2`, runs a copy of the code in a Docker volume of its own, with its own PHP and nginx. The copy leaves out `pub/media`, which every server shares, as it would on a real cluster, and each server keeps its own `var/log` and `var/report`.
+- **Varnish sends each request to the next server in turn.** The `X-Kapelos-Server` response header names the server that answered. Kapelos wraps the site's VCL rather than changing it, so Magento's own VCL works too, as long as it doesn't pick a backend itself.
+- **Each server also answers on its own port**, one above `HTTP_PORT`: `web-1` on 8081, `web-2` on 8082. Send the store's hostname to reach one directly, or Magento redirects you to the store's address: `curl -H 'Host: localhost:8080' http://127.0.0.1:8082/`.
+- **Every PHP container has a fixed host name**, `web-1` or `web-2`. Recreating a container doesn't turn it into a new server for anything that goes by the host name.
+- **`db-replica` is a MariaDB replica of the store's database.** The primary gets its binary log turned on, in row format, with `log_bin_trust_function_creators`, which Magento's indexer triggers need once the log is on. The replica starts from one dump of the whole database and follows the primary by GTID from the position that dump records. It's read-only, and the store's database user can read it.
+- **`app/etc/env.php` gets a connection called `replica`**, pointing at `db-replica`. Magento itself doesn't use a connection by that name, so nothing changes until a module you're testing reads from it.
+
+**Keeping the copies current.** A copy is taken when a server is added, and again whenever Kapelos changes the code: `deploy`, `develop`, `composer` (except commands that only read, like `show` or `outdated`) and `modules add` or `remove`. Editing a file yourself doesn't copy it. `bin/kapelos scale` and `bin/kapelos doctor` say when a copy is older than the store's folder, and `bin/kapelos scale refresh` copies it again. A refresh stops that server's PHP while it copies, and replaces anything you changed on that server by hand.
+
+**Deploying.** `deploy` turns maintenance mode on on every server, runs its steps on server 1, then copies the result to the others before it empties the caches and turns maintenance off everywhere. `develop` does the same on the way back.
+
+**Replication and snapshots.** A snapshot saves and restores the primary. Restoring gives the primary a different history from the one the replica was following, so `snapshot restore` copies the database to the replica again. If replication stops for any other reason, `up`, `scale` and `doctor` say so with the replica's own error, and `bin/kapelos scale reseed` starts the replica again from a fresh dump. Kapelos doesn't reseed on its own there, because why replication stopped may be exactly what you're testing.
+
+**Going back.** `bin/kapelos scale web=1 replica=0` removes the other servers and their copies, the replica and its data, the `replica` connection in `env.php`, the primary's binary log and the account the replica read it with. What's left is the ordinary site, the way it was before you scaled it: the self-test checks that.
+
+**It costs memory.** Each extra server is a PHP container allowed 4 GB and an nginx allowed 256 MB, and the replica is allowed 1 GB. They use far less while idle, but on a laptop two servers and a replica is plenty. The copies take disk as well: one store's worth each.
+
+**On an adopted store**, each copy gets Kapelos's `env.php`, the one server 1 runs with.
+
+**A store that already built this by hand** in its own `.kapelos/compose.yaml` is refused while that file defines a service called `db-replica`, `php-2`, `web-2` and so on, because the two would merge. Take those services out of it, `kapelos trust` it again, and then scale.
+
 ## Running the store's tests
 
 ```bash
@@ -757,7 +795,7 @@ bin/kapelos doctor
 bin/kapelos self-test
 ```
 
-`self-test` runs `check` and `check-image`, then builds a throwaway store in a temporary folder and checks that each feature works: the storefront, admin, HTTPS, the Xdebug routing, Magento commands, mail, `cache-reset`, `magento-install` refusing a database that exists, `import` and `connect`, and `deploy` and `develop`. It also installs the Kingletas modules and runs `site audit`, which has to find nothing failed outside the dependencies. Those depend on the advisories published that week, not on Kapelos. `self-test` leaves bluetir, drexbot, manipulus and `ci` out, because they need sample data and their own images, and would double its length. Then it removes the store and its data. It takes me five and a half minutes with the images already downloaded, and it refuses to start while a site is running, because it needs the ports.
+`self-test` runs `check` and `check-image`, then builds a throwaway store in a temporary folder and checks that each feature works: the storefront, admin, HTTPS, the Xdebug routing, Magento commands, mail, `cache-reset`, `magento-install` refusing a database that exists, `import` and `connect`, `deploy` and `develop`, and then the same on two web servers and a replica: requests reaching both servers, a write reaching the replica, `composer` copying the code, `deploy` and `develop` on every server, a snapshot restore reseeding the replica, and `scale web=1 replica=0` leaving the site as it was. It also installs the Kingletas modules and runs `site audit`, which has to find nothing failed outside the dependencies. Those depend on the advisories published that week, not on Kapelos. `self-test` leaves bluetir, drexbot, manipulus and `ci` out, because they need sample data and their own images, and would double its length. Then it removes the store and its data. It takes me five and a half minutes with the images already downloaded, and it refuses to start while a site is running, because it needs the ports.
 
 ## What Kapelos doesn't do
 

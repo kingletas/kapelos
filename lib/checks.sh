@@ -227,6 +227,19 @@ audit_headers() {
   fi
 }
 
+# A scaled site's other servers and its replica. Silent for a site on one server and no replica.
+doctor_scale() {
+  local n state
+  for n in $(scale_extra_servers); do
+    if scale_copy_stale "$n"; then
+      report_line WARN "web-$n runs a copy of the code older than the store's folder. Copy it again with: kapelos scale refresh"
+    fi
+  done
+  [[ $(scale_replicas) -gt 0 ]] || return 0
+  state="$(scale_replica_state)"
+  report_either "$(yes_if test "${state%%,*}" = running -o "$state" = "connecting to the primary")" "db-replica is replicating" FAIL "db-replica isn't replicating: $state. kapelos scale reseed copies the database to it again"
+}
+
 # The release a store is: Magento's version, or for Mage-OS the Magento version it's built on.
 magento_release() {
   python3 - "$1/composer.lock" <<'PY' 2>/dev/null || true
@@ -272,7 +285,7 @@ yes_if() {
 cmd_doctor() {
   REPORT_FAILS=0
   REPORT_WARNS=0
-  local version major minor memory free root port running=no release row actual tool rc busy i
+  local version major minor memory free root port running=no release row actual tool rc busy i n
   echo "This machine"
   if ! command -v docker >/dev/null; then
     report_line FAIL "Docker isn't installed"
@@ -324,9 +337,10 @@ cmd_doctor() {
     running_projects | grep -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && running=yes
     if [[ $running == yes ]]; then
       report_line pass "running"
+      doctor_scale
     else
       local taken=0
-      for port in "${HTTP_PORT:-8080}" "${HTTPS_PORT:-8443}" "${DB_PORT:-13306}" "${MAIL_UI_PORT:-8025}" "${OPENSEARCH_PORT:-9200}" "${RABBITMQ_UI_PORT:-15672}"; do
+      for port in "${HTTP_PORT:-8080}" "${HTTPS_PORT:-8443}" $(scaled && scale_port 1) $(for n in $(scale_extra_servers); do scale_port "$n"; done) "${DB_PORT:-13306}" "${MAIL_UI_PORT:-8025}" "${OPENSEARCH_PORT:-9200}" "${RABBITMQ_UI_PORT:-15672}"; do
         if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
           report_line FAIL "port $port is taken by something else, so the site can't start"
           taken=1

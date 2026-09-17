@@ -147,7 +147,8 @@ cmd_stores() {
   fi
   # nginx reads the hostname map when it starts.
   compose up -d
-  compose restart web web-debug
+  # shellcheck disable=SC2046 # one word per service
+  compose restart web web-debug $(scale_extra_services | tr ' ' '\n' | grep '^web-')
   cmd_cache_reset
 }
 
@@ -183,8 +184,8 @@ site_remove() {
   fi
   # Every profile is on, so a service whose profile was switched off after it started is removed too.
   COMPOSE_PROFILES='*' docker compose --progress quiet --env-file "$file" down -v --remove-orphans
-  # Snapshots aren't part of the compose project, so down -v leaves them.
-  docker volume ls -q --filter "label=kapelos.snapshot.project=$project" | while IFS= read -r volume; do
+  # Snapshots aren't part of the compose project, and a scaled site's copies and replica aren't in compose.yaml, so down -v leaves them.
+  { docker volume ls -q --filter "label=kapelos.snapshot.project=$project"; docker volume ls -q --filter "label=com.docker.compose.project=$project"; } | while IFS= read -r volume; do
     docker volume rm "$volume" >/dev/null
   done
   rm -rf "$(site_state_dir_of "$project")" "var/tools/$project"

@@ -3,7 +3,7 @@
 # shellcheck disable=SC2016 # single-quoted code runs in a container's shell, which expands it
 
 cmd_check() {
-  require_tools docker shellcheck yamllint
+  require_tools docker shellcheck yamllint python3
 
   CHECK_SCRATCH="$(mktemp -d)"
   trap 'rm -rf "$CHECK_SCRATCH"' EXIT
@@ -89,6 +89,8 @@ cmd_check() {
 
   rm -rf "var/sites/check-project" "$(project_trust_file "$(cd "$scratch/store" && pwd -P)")"
 
+  check_scale "$scratch"
+
   echo "autoload: a class map naming generated classes that are gone is spotted, and a healthy one is not"
   local tree="$scratch/autoload"
   mkdir -p "$tree/vendor/composer" "$tree/generated/code/Magento"
@@ -138,6 +140,86 @@ cmd_check() {
   rm -rf "$scratch"
   trap - EXIT
   echo "check: all passed"
+}
+
+# The compose file and VCL kapelos scale writes, checked without starting anything.
+check_scale() {
+  local scratch="$1" env="$1/env-scale" plain scaled bad out
+  mkdir -p "$scratch/scale/pub/media"
+  write_env "$env" "MAGENTO_SRC=$scratch/scale" "COMPOSE_PROJECT_NAME=kapelos-check-scale"
+
+  echo "scale: the ordinary shape adds nothing to the stack"
+  plain="$(docker compose --env-file "$env" -f compose.yaml config)"
+  [[ $(ENV_FILE="$env" && compose config) == "$plain" ]] || die "a site on one web server and no replica runs a different stack from compose.yaml alone"
+  [[ ! -e var/sites/check-scale/scale.yaml ]] || die "the ordinary shape wrote a scale overlay"
+
+  echo "scale: two web servers and a replica are valid compose, each server with its own name, code and port"
+  set_env_value "$env" WEB_SERVERS 2
+  set_env_value "$env" DB_REPLICAS 1
+  scaled="$(ENV_FILE="$env" && compose config --format json)"
+  python3 -c '
+import json, sys
+services = json.load(sys.stdin)["services"]
+def ports(name):
+    return [p["published"] for p in services[name].get("ports", [])]
+def mounted(name, path):
+    return [v for v in services[name]["volumes"] if v["target"] == path]
+assert services["php"]["hostname"] == "web-1", "php is not web-1"
+assert services["php-2"]["hostname"] == "web-2", "php-2 is not web-2"
+assert mounted("php-2", "/app")[0]["source"] == "app-2", "php-2 does not run its own copy"
+assert mounted("web-2", "/app")[0]["source"] == "app-2", "web-2 does not serve its own copy"
+assert mounted("php-2", "/run/php")[0]["source"] == "php-socket-2", "php-2 shares server 1 socket"
+assert mounted("php-2", "/app/pub/media"), "php-2 does not share the media folder"
+assert ports("web") == ["8081"] and ports("web-2") == ["8082"], "the servers are not on 8081 and 8082"
+assert "--log-bin=mysql-bin" in services["db"]["command"], "the database has no binary log"
+assert "--log-bin-trust-function-creators=1" in services["db"]["command"], "triggers would be refused with the binary log on"
+assert "--read-only=1" in services["db-replica"]["command"], "the replica is writable"
+assert mounted("varnish", "/etc/varnish/site.vcl"), "Varnish does not load the site VCL beside the round robin"
+assert "web-2" in services["varnish"]["depends_on"], "Varnish does not restart when web-2 is recreated"
+' <<<"$scaled" || die "the scaled stack is not the shape kapelos scale promises"
+  # It holds absolute paths, which run as long as the folder Kapelos lives in.
+  yamllint --strict -d '{extends: default, rules: {document-start: disable, line-length: disable}}' var/sites/check-scale/scale.yaml
+
+  echo "scale: the round robin compiles around the site's own VCL"
+  # Varnish looks each backend's name up while compiling, so the names are given an address here.
+  docker run --rm --add-host web:127.0.0.1 --add-host web-2:127.0.0.1 \
+    -v "$KAPELOS_HOME/var/sites/check-scale/scale.vcl:/etc/varnish/default.vcl:ro" \
+    -v "$KAPELOS_HOME/etc/varnish/default.vcl:/etc/varnish/site.vcl:ro" \
+    --entrypoint varnishd "varnish:$(env_value "$env" VARNISH_VERSION)" -C -f /etc/varnish/default.vcl >/dev/null 2>&1 ||
+    die "the VCL kapelos scale writes doesn't compile"
+
+  echo "scale: a replica alone leaves the web servers as they are"
+  set_env_value "$env" WEB_SERVERS 1
+  scaled="$(ENV_FILE="$env" && compose config --services)"
+  if ! grep -qx db-replica <<<"$scaled" || grep -qx php-2 <<<"$scaled"; then
+    die "DB_REPLICAS=1 on one web server didn't add just the replica"
+  fi
+  [[ ! -e var/sites/check-scale/scale.vcl ]] || die "one web server still has a round-robin VCL"
+
+  echo "scale: a shape Kapelos doesn't run is refused"
+  for bad in WEB_SERVERS=0 WEB_SERVERS=5 WEB_SERVERS=two DB_REPLICAS=2; do
+    set_env_value "$env" WEB_SERVERS 1
+    set_env_value "$env" DB_REPLICAS 0
+    set_env_value "$env" "${bad%%=*}" "${bad#*=}"
+    if (ENV_FILE="$env" && load_env) 2>/dev/null; then
+      die "a site with $bad was accepted"
+    fi
+  done
+  set_env_value "$env" DB_REPLICAS 0
+  for bad in web=9 replica=2 servers=2; do
+    out="$(KAPELOS_ENV="$env" "$KAPELOS_HOME/bin/kapelos" scale "$bad" -y 2>&1)" && die "kapelos scale $bad was accepted"
+    grep -q "not ${bad#*=}" <<<"$out" || grep -q "not $bad" <<<"$out" || die "kapelos scale $bad failed for another reason: $out"
+  done
+  [[ $(env_value "$env" WEB_SERVERS) == 1 ]] || die "a refused kapelos scale changed the settings"
+
+  echo "scale: a store whose own compose file already runs db-replica is refused"
+  mkdir -p "$scratch/scale/.kapelos"
+  printf 'services:\n  db-replica:\n    image: alpine\n' >"$scratch/scale/.kapelos/compose.yaml"
+  out="$(KAPELOS_ENV="$env" "$KAPELOS_HOME/bin/kapelos" scale replica=1 -y 2>&1)" && die "kapelos scale ran beside a store's own db-replica"
+  grep -q 'already defines db-replica' <<<"$out" || die "kapelos scale failed for another reason beside a store's own db-replica: $out"
+  rm -rf "$scratch/scale/.kapelos"
+
+  rm -rf var/sites/check-scale
 }
 
 cmd_check_image() {
@@ -286,7 +368,7 @@ cmd_self_test() {
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/kapelos-self-test.XXXXXX")"
   ENV_FILE="$scratch/env"
   SELF_TEST_SCRATCH="$scratch"
-  trap 'compose down -v >/dev/null 2>&1; rm -rf "$SELF_TEST_SCRATCH"' EXIT
+  trap 'compose down -v >/dev/null 2>&1; remove_self_test_volumes; rm -rf "$SELF_TEST_SCRATCH"' EXIT
   write_env "$ENV_FILE" \
     "COMPOSE_PROJECT_NAME=kapelos-self-test" \
     "MAGENTO_SRC=$scratch/magento" \
@@ -321,11 +403,103 @@ cmd_self_test() {
   verify "the store answers in production mode" status_is 200 "$STORE_URL"
   verify "develop goes back to developer mode" cmd_develop
   verify "the store answers in developer mode" status_is 200 "$STORE_URL"
+
+  local before
+  before="$(site_fingerprint)"
+  verify "scale web=2 replica=1 spreads requests over two servers, each also on its own port" scaled_servers_answer
+  verify "a write on the primary reaches the replica, and web-2's env.php names it" replica_follows_writes
+  verify "composer copies the code to the other server, and a changed store reads as newer until it does" copies_follow_composer
+  verify "deploy reaches production mode, scaled" cmd_deploy
+  verify "every server is in production mode, and the store answers" every_server_answers production
+  verify "develop goes back to developer mode, scaled" cmd_develop
+  verify "every server is in developer mode, and the store answers" every_server_answers developer
+  verify "a snapshot restore copies the database to the replica again" restore_reseeds_replica
+  verify "scale web=1 replica=0 leaves the site exactly as it was before scaling" scaled_back_as_before "$before"
   verify "adopt runs the store from a dump as a second site, declares its queues, and leaves its env.php alone" adopted_copy_serves "$scratch"
 
   echo
   [[ $SELF_TEST_FAILED -eq 0 ]] || die "self-test failed"
   echo "self-test: every check passed. Removing the throwaway store."
+}
+
+# A scaled site's copies and replica aren't in compose.yaml, so down -v alone leaves them when a scaled check fails.
+remove_self_test_volumes() {
+  docker volume ls -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-kapelos-self-test}" |
+    while IFS= read -r volume; do docker volume rm "$volume" >/dev/null 2>&1 || true; done
+}
+
+# What scaling back has to return to: the stack, env.php, the database's accounts and binary log, and the site's volumes.
+site_fingerprint() {
+  {
+    compose config
+    cksum <"$MAGENTO_SRC/app/etc/env.php"
+    db_root -N -e "SELECT CONCAT(user, '@', host) FROM mysql.user ORDER BY 1; SELECT @@log_bin" </dev/null
+    exec_quiet db sh -c 'ls /var/lib/mysql | grep -c "^mysql-bin" || true' </dev/null
+    docker volume ls -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" | sort
+  } | sha256_stdin
+}
+
+server_header_values() {
+  local i
+  for i in 1 2 3 4; do
+    curl -s -o /dev/null -D - "$STORE_URL" | tr -d '\r' | sed -n 's/^[Xx]-[Kk]apelos-[Ss]erver: //p'
+  done
+}
+
+scaled_servers_answer() {
+  local seen host
+  cmd_scale web=2 replica=1 -y
+  seen="$(server_header_values)"
+  grep -qx web-1 <<<"$seen" || return 1
+  grep -qx web-2 <<<"$seen" || return 1
+  host="$(printf '%s' "$STORE_URL" | sed -E 's#^https?://([^/]+).*#\1#')"
+  status_is 200 -H "Host: $host" "http://127.0.0.1:$(scale_port 2)/"
+  [[ $(exec_quiet php-2 hostname </dev/null | tr -d '\r') == web-2 ]]
+}
+
+replica_follows_writes() {
+  local marker="self-test-$$-$RANDOM" tries=0 table
+  table="$(config_table)"
+  db_root "${DB_NAME:-magento}" -e "INSERT INTO \`$table\` (scope, scope_id, path, value) VALUES ('default', 0, 'kapelos/self_test/replica', '$marker') ON DUPLICATE KEY UPDATE value = '$marker'" </dev/null
+  until [[ $(replica_root -N "${DB_NAME:-magento}" -e "SELECT value FROM \`$table\` WHERE path = 'kapelos/self_test/replica'" </dev/null) == "$marker" ]]; do
+    tries=$((tries + 1))
+    [[ $tries -lt 30 ]] || return 1
+    sleep 1
+  done
+  db_root "${DB_NAME:-magento}" -e "DELETE FROM \`$table\` WHERE path = 'kapelos/self_test/replica'" </dev/null
+  exec_quiet php-2 php -r '$env = include "app/etc/env.php"; exit(($env["db"]["connection"]["replica"]["host"] ?? "") === "db-replica" ? 0 : 1);' </dev/null
+}
+
+copies_follow_composer() {
+  local file="$MAGENTO_SRC/app/kapelos-self-test.txt" status=0
+  ! scale_copy_stale 2 || return 1
+  sleep 1
+  date >"$file"
+  scale_copy_stale 2 || status=1
+  cmd_composer dump-autoload --no-interaction >/dev/null || status=1
+  exec_quiet php-2 test -f app/kapelos-self-test.txt </dev/null || status=1
+  ! scale_copy_stale 2 || status=1
+  rm -f "$file"
+  return "$status"
+}
+
+every_server_answers() {
+  local mode="$1"
+  [[ $(magento_mode) == "$mode" ]] || return 1
+  [[ $(exec_quiet php-2 php bin/magento deploy:mode:show </dev/null | sed -n 's/.*Current application mode: \([a-z]*\).*/\1/p') == "$mode" ]] || return 1
+  status_is 200 "$STORE_URL" && status_is 200 "$STORE_URL"
+}
+
+restore_reseeds_replica() {
+  cmd_snapshot save self-test-scaled
+  cmd_snapshot restore self-test-scaled -y
+  cmd_snapshot delete self-test-scaled -y
+  replica_follows_writes
+}
+
+scaled_back_as_before() {
+  cmd_scale web=1 replica=0 -y
+  status_is 200 "$STORE_URL" && [[ $(site_fingerprint) == "$1" ]]
 }
 
 # Whether the dependencies pass depends on what advisories are published that week; everything else the audit checks has to.
