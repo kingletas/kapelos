@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.1.0]: 2026-09-21
 
 The first version: a Docker Compose stack that runs a Magento 2.4 store, whether you already have one or not.
 
