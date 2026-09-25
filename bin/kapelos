@@ -26,6 +26,9 @@ REPOSITORIES_FILE=etc/repositories.tsv
 SHARE_COMMANDS=share/commands
 AUDIT_CHECKS=etc/audit/checks.tsv
 SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
+# The ports a site publishes. kapelos env --slot N moves each one up by N strides, and a stride leaves room for kapelos scale's four servers above HTTP_PORT.
+PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
+PORT_SLOT_STRIDE=100
 # What a store's own .kapelos/settings.env may set: facts about the store, never ports, passwords or paths on this machine.
 PROJECT_KEYS="PHP_VERSION NODE_VERSION MARIADB_VERSION OPENSEARCH_VERSION VALKEY_VERSION RABBITMQ_VERSION VARNISH_VERSION NGINX_VERSION INSTALL_SOURCEGUARDIAN MAGENTO_NGINX_CONF STORES DEPLOY_LOCALES MANIPULUS_THEME AUDIT_PATHS"
 
@@ -70,7 +73,8 @@ Usage: kapelos <command> [arguments]
 Getting a store
   demo                   Download and install a demo store, with no questions
   interactive            Ask a few questions, then set a store up without asking again
-  env [SITE]             Write settings with generated passwords: .env, or etc/sites/SITE.env
+  env [SITE] [--slot N]  Write settings with generated passwords: .env, or etc/sites/SITE.env.
+                         --slot N moves every port up by N hundred, for a second store on one Docker
   adopt PATH --datadir DIR | --dump FILE [--name SITE] [--url URL] [--store HOST=CODE] [--proxy NETWORK] [--no-reindex]
                          Run a store you already have, as it is: its code where it lives, a copy of
                          its database, and its own env.php untouched
