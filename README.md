@@ -255,10 +255,10 @@ The site's `MAGENTO_BASE_URL` carries its own HTTP port, `http://acme.test:8180/
 
 ```bash
 export KAPELOS_MAX_RUNNING=2       # at most two Kapelos stores running on this Docker
-export KAPELOS_MEM_BUDGET_GIB=30   # and their memory limits add up to 30 GiB or less
+export KAPELOS_MEM_BUDGET_GIB=30   # and their declared memory limits add up to 30 GiB or less
 ```
 
-`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. A container with no `mem_limit` counts as nothing. Both are unset unless you set them, and then `up` checks only its own folder, as it always has.
+`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them, and then `up` checks only its own folder, as it always has.
 
 ## Running a store you already have
 

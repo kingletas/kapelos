@@ -268,6 +268,12 @@ running_projects() {
 
 # Every running Kapelos container on the Docker daemon, whichever folder started it, as
 # "project memory-limit-in-bytes folder" lines. A container with no limit reports 0.
+# A folder as its physical path, so a symlink or a trailing slash names the same folder. One that no longer
+# exists keeps its spelling, less any trailing slash.
+physical_dir() {
+  if [[ -d $1 ]]; then (cd -P -- "$1" && pwd); else printf '%s\n' "${1%/}"; fi
+}
+
 daemon_kapelos_containers() {
   local ids
   ids="$(docker ps -q --filter label=com.docker.compose.project)" || die "Docker isn't answering, so Kapelos can't count the stores running on it"

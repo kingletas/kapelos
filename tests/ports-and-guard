@@ -168,6 +168,14 @@ echo "kapelos-mine_db-data|kapelos-mine|" >"$STUB_DOCKER/volumes"
 check "a name whose containers are this folder's is allowed" bash -c "cd '$A' && bin/kapelos env mine >/dev/null"
 
 reset_docker
+echo "c3|kapelos-slash|$A/|0|exited" >"$STUB_DOCKER/containers"
+check "this folder written with a trailing slash is still this folder" bash -c "cd '$A' && bin/kapelos env slash >/dev/null"
+reset_docker
+ln -s "$A" "$SCRATCH/a-link"
+echo "c4|kapelos-linked|$SCRATCH/a-link|0|exited" >"$STUB_DOCKER/containers"
+check "this folder reached through a symlink is still this folder" bash -c "cd '$A' && bin/kapelos env linked >/dev/null"
+
+reset_docker
 check "Docker not answering leaves env working, with a note" bash -c "
   cd '$A' && out=\$(STUB_DOCKER_DOWN=yes bin/kapelos env offline 2>&1 >/dev/null) &&
   [[ -f etc/sites/offline.env && \$out == *\"Docker isn't answering\"* ]]"
@@ -247,14 +255,15 @@ check "with neither setting, the guard asks Docker nothing more" bash -c "! grep
 export KAPELOS_MAX_RUNNING=2
 check "a third running store is refused by count" up_refused \
   "would make 3 Kapelos stores running on this Docker, and KAPELOS_MAX_RUNNING is 2" \
-  "kapelos-alpha, 12.0 GiB of limits, from /srv/one" "kapelos-beta, 14.0 GiB of limits, from /srv/two"
+  "kapelos-alpha, 12.0 GiB of declared limits, from /srv/one" "kapelos-beta, 14.0 GiB of declared limits, from /srv/two"
 export KAPELOS_MAX_RUNNING=3
 check "a third store passes a limit of 3" up_passes
 unset KAPELOS_MAX_RUNNING
 
 export KAPELOS_MEM_BUDGET_GIB=30
 check "a store past the memory budget is refused, with the numbers" up_refused \
-  "limits of running Kapelos stores to 39.0 GiB: 26.0 GiB already running and 13.0 GiB for this site, over KAPELOS_MEM_BUDGET_GIB=30"
+  "declared memory limits of running Kapelos stores to 39.0 GiB: 26.0 GiB already running and 13.0 GiB for this site, over KAPELOS_MEM_BUDGET_GIB=30" \
+  "1 running container declares no memory limit and is not counted, so real use is higher"
 export KAPELOS_MEM_BUDGET_GIB=39
 check "a store that lands exactly on the budget passes" up_passes
 export KAPELOS_MAX_RUNNING=3 KAPELOS_MEM_BUDGET_GIB=40

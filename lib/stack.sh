@@ -14,7 +14,7 @@ require_room_on_daemon() {
   # One line per project: its name, its limits added up, and the folder it runs from.
   listing="$(awk '
     NF >= 2 { name = $1; memory[name] += $2; line = $0; sub(/^[^ ]+ [^ ]+ /, "", line); folder[name] = line }
-    END { for (name in memory) printf "  %s, %.1f GiB of limits, from %s\n", name, memory[name] / 1073741824, folder[name] }
+    END { for (name in memory) printf "  %s, %.1f GiB of declared limits, from %s\n", name, memory[name] / 1073741824, folder[name] }
   ' <<<"$running" | sort)"
   count="$(grep -c . <<<"$listing" || true)"
   used="$(awk '{ total += $2 } END { printf "%.0f\n", total }' <<<"$running")"
@@ -27,8 +27,14 @@ Stop one with kapelos down in its own folder first"
   [[ -n $budget ]] || return 0
   mine="$(site_memory_limit)"
   total=$((used + mine))
+  # Only declared limits can be added up; a container with none counts as nothing, so say how many there are.
+  local unlimited note=""
+  unlimited="$(awk '$2 == 0' <<<"$running" | grep -c . || true)"
+  [[ $unlimited -eq 0 ]] || note="
+$unlimited running container$([[ $unlimited -eq 1 ]] && echo " declares" || echo "s declare") no memory limit and $([[ $unlimited -eq 1 ]] && echo "is" || echo "are") not counted, so real use is higher"
   if [[ $total -gt $((budget * 1073741824)) ]]; then
-    die "starting $current would bring the memory limits of running Kapelos stores to $(gib "$total") GiB: $(gib "$used") GiB already running and $(gib "$mine") GiB for this site, over KAPELOS_MEM_BUDGET_GIB=$budget. Running now:
+    die "starting $current would bring the declared memory limits of running Kapelos stores to $(gib "$total") GiB: $(gib "$used") GiB already running and $(gib "$mine") GiB for this site, over KAPELOS_MEM_BUDGET_GIB=$budget.${note}
+Running now:
 $listing
 Stop one with kapelos down in its own folder first, or run this site with fewer services"
   fi

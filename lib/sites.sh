@@ -89,6 +89,7 @@ require_name_free_on_daemon() {
     echo "kapelos: Docker isn't answering, so no check was made that another Kapelos folder doesn't already use the name $1" >&2
     return 0
   fi
+  folders="$(while IFS= read -r folder; do [[ -z $folder ]] || physical_dir "$folder"; done <<<"$folders")"
   elsewhere="$(grep -vxF "$KAPELOS_HOME" <<<"$folders" | grep -v '^$' | sort -u | tr '\n' ' ' || true)"
   [[ -z $elsewhere ]] || die "$project already has containers from another Kapelos folder: $elsewhere
 One name in two folders shares one set of containers and one database. Pick another name"
