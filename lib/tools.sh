@@ -160,7 +160,7 @@ cmd_ci() {
   act="$(act_binary)"
   mkdir -p var/ci/cache var/ci/config
   (
-    cd "$MAGENTO_SRC"
+    cd "$MAGENTO_SRC" || exit 1
     # act keeps a failed job's container and volumes unless told otherwise.
     XDG_CACHE_HOME="$KAPELOS_HOME/var/ci/cache" XDG_CONFIG_HOME="$KAPELOS_HOME/var/ci/config" "$act" --rm \
       -P ubuntu-latest=catthehacker/ubuntu:act-latest \
@@ -363,14 +363,14 @@ modules_status() {
 }
 
 modules_add() {
-  local rows repositories name package module version role repository requires=() modules=()
+  local rows repositories name package module version role requires=() modules=()
   rows="$(selected_module_rows "$@")"
   repositories="$(module_rows | cut -f5 | sort -u)"
   while IFS= read -r name; do
     repository_add "$name"
   done <<<"$repositories"
   remove_legacy_module_repositories
-  while IFS=$'\t' read -r package module version role repository; do
+  while IFS=$'\t' read -r package module version role _; do
     requires+=("$package:$version")
     modules+=("$module")
   done <<<"$rows"
@@ -378,7 +378,7 @@ modules_add() {
   step "Installing ${requires[*]}"
   exec_php composer require --no-interaction "${requires[@]}"
   # A dependency is enabled only if Composer brought it in, so a list that grows never names a missing module.
-  while IFS=$'\t' read -r package module version role repository; do
+  while IFS=$'\t' read -r package module version role _; do
     [[ $role == dependency ]] && package_installed "$package" && modules+=("$module")
   done < <(module_rows)
   step "Enabling ${modules[*]}"
@@ -389,9 +389,9 @@ modules_add() {
 }
 
 modules_remove() {
-  local rows package module version role repository packages=() modules=() leaving
+  local rows package module version role packages=() modules=() leaving
   rows="$(selected_module_rows "$@")"
-  while IFS=$'\t' read -r package module version role repository; do
+  while IFS=$'\t' read -r package module version role _; do
     package_installed "$package" || continue
     packages+=("$package")
     modules+=("$module")
@@ -404,7 +404,7 @@ modules_remove() {
   # Composer names the dependencies that leave with them, so their modules are disabled too.
   leaving="$(exec_quiet php composer remove --dry-run --no-interaction "${packages[@]}" </dev/null 2>&1 |
     sed -n 's/.*Removing \(kingletas\/[a-z0-9-]*\).*/\1/p' | sort -u)"
-  while IFS=$'\t' read -r package module version role repository; do
+  while IFS=$'\t' read -r package module version role _; do
     [[ $role == dependency ]] && grep -qx "$package" <<<"$leaving" && modules+=("$module")
   done < <(module_rows)
 

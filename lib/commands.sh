@@ -273,7 +273,7 @@ run_custom_command() {
   [[ $file != "${MAGENTO_SRC:-}/.kapelos/"* ]] || require_trusted "$MAGENTO_SRC"
   [[ -x $file ]] || die "$file isn't executable. Make it so with: chmod +x $file"
   export KAPELOS="$KAPELOS_HOME/bin/kapelos" KAPELOS_HOME
-  cd "${MAGENTO_SRC:-$KAPELOS_HOME}"
+  cd "${MAGENTO_SRC:-$KAPELOS_HOME}" || die "can't enter ${MAGENTO_SRC:-$KAPELOS_HOME} to run $file"
   exec "$file" "$@"
 }
 
