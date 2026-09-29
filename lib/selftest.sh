@@ -447,8 +447,7 @@ site_fingerprint() {
 }
 
 server_header_values() {
-  local i
-  for i in 1 2 3 4; do
+  for _ in 1 2 3 4; do
     curl -s -o /dev/null -D - "$STORE_URL" | tr -d '\r' | sed -n 's/^[Xx]-[Kk]apelos-[Ss]erver: //p'
   done
 }

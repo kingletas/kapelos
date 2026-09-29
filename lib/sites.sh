@@ -306,6 +306,7 @@ cmd_site() {
   if [[ -n ${1:-} ]]; then
     valid_site_name "$1"
     [[ -f $SITES_DIR/$1.env ]] || die "there's no site called $1. kapelos sites lists them"
+    # shellcheck disable=SC2034 # load_env and the commands read it; a check of this file alone can't see them
     ENV_FILE="$SITES_DIR/$1.env"
   fi
   load_env
