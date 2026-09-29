@@ -40,6 +40,8 @@ SELF_TEST_FAILED=0
 # The rest of Kapelos, a file per job. lib/core.sh holds what the others build on.
 # shellcheck source=lib/core.sh
 . "$KAPELOS_HOME/lib/core.sh"
+# shellcheck source=lib/queue.sh
+. "$KAPELOS_HOME/lib/queue.sh"
 # shellcheck source=lib/sites.sh
 . "$KAPELOS_HOME/lib/sites.sh"
 # shellcheck source=lib/store.sh
@@ -152,12 +154,19 @@ Kapelos ships seven to start from: kapelos commands add.
 Every command also runs through make: make up, make magento ARGS="cache:flush".
 A command with a colon is Magento's; Kapelos's own commands never have one.
 Set KAPELOS_ENV to use a settings file other than .env for one command.
+Heavy work takes turns across every Kapelos folder on the machine: starting or installing a store,
+composer changing the tree, setup:upgrade, a compile, a deploy and a reindex. KAPELOS_HEAVY_AT_ONCE
+sets how many run at once (1), and KAPELOS_HEAVY_WAIT how many seconds one waits for its turn (3600).
 EOF
 }
 
 main() {
   local command="${1:-help}"
   [[ $# -gt 0 ]] && shift
+
+  if heavy_command "$command" "${1:-}"; then
+    heavy_turn_take "kapelos $command${1:+ $1} for $ENV_FILE in $KAPELOS_HOME"
+  fi
 
   case "$command" in
     adopt) cmd_adopt "$@" ;;

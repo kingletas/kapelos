@@ -19,6 +19,7 @@ A *kapelos* was the small shopkeeper of an ancient Greek town. His bigger siblin
 - [Settings](#settings)
 - [Several projects](#several-projects)
 - [Two stores on one machine](#two-stores-on-one-machine)
+- [Heavy work takes turns](#heavy-work-takes-turns)
 - [Running a store you already have](#running-a-store-you-already-have)
 - [A store's own settings](#a-stores-own-settings)
 - [Several storefronts](#several-storefronts)
@@ -200,6 +201,7 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `DB_PORT` | `13306` | MariaDB, for a database tool on your machine |
 | `OPENSEARCH_PORT`, `RABBITMQ_UI_PORT`, `MAIL_UI_PORT` | `9200`, `15672`, `8025` | OpenSearch, RabbitMQ's management page and Mailpit, on your machine. `env --slot` moves every port at once; see [Two stores on one machine](#two-stores-on-one-machine) |
 | `KAPELOS_MAX_RUNNING`, `KAPELOS_MEM_BUDGET_GIB` | *(none)* | Limits across every Kapelos folder on one Docker. See [Two stores on one machine](#two-stores-on-one-machine) |
+| `KAPELOS_HEAVY_AT_ONCE`, `KAPELOS_HEAVY_WAIT` | `1`, `3600` | How many heavy jobs run at once across the machine, and how many seconds one waits for its turn. See [Heavy work takes turns](#heavy-work-takes-turns) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
@@ -259,6 +261,16 @@ export KAPELOS_MEM_BUDGET_GIB=30   # and their declared memory limits add up to 
 ```
 
 `up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them, and then `up` checks only its own folder, as it always has.
+
+## Heavy work takes turns
+
+A store that is up and idle costs little. What fills every core is the work around it: starting a store, installing one, `composer install`, `require` or `update`, `setup:upgrade`, a compile, a static deploy, a reindex, `adopt`, `import`, `deploy` and `self-test`. So those take turns, one at a time across every Kapelos folder you run on the machine, and everything else goes straight through. A command that has to wait says what it is waiting on, once, and again only if that changes:
+
+```text
+kapelos: waiting for a turn at heavy work, kapelos up for etc/sites/acme.env in /home/you/kapelos: busy with kapelos setup:upgrade for .env in /home/you/kapelos
+```
+
+`KAPELOS_HEAVY_AT_ONCE` lets more than one run at a time, and `KAPELOS_HEAVY_WAIT` is how many seconds a command waits before it gives up and says what the turn is still busy with; 0 means don't wait. A command that dies gives its turn back as it goes. One killed outright can't, so the next command finds the process that held the turn gone and takes it over, and says so. The turns live in a folder under your temporary directory, or in `KAPELOS_QUEUE_DIR` if you set it. It's a queue for load, not a lock on your data: at worst, two jobs run at once.
 
 ## Running a store you already have
 

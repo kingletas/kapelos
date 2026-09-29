@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# The queue for heavy work: a turn taken, waited for and given back, a dead holder's turn taken over, a
+# command inside another going straight on, and the settings refused. Offline: real processes and a
+# scratch queue, and nothing touches Docker.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+cleanup() {
+  jobs -p | xargs kill 2>/dev/null || true
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
+FAILURES=0
+export KAPELOS_QUEUE_DIR="$SCRATCH/queue"
+TURN="$KAPELOS_QUEUE_DIR/turn-1"
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+die() {
+  echo "kapelos: $*" >&2
+  exit 1
+}
+# shellcheck source=/dev/null # lib/queue.sh is checked on its own
+. "$ROOT/lib/queue.sh"
+
+# Takes a turn as WHAT, holds it SECONDS, then exits, as a heavy command does. Prints "taken" once it has it.
+hold() {
+  bash -c '
+    set -euo pipefail
+    die() { echo "kapelos: $*" >&2; exit 1; }
+    . "$1/lib/queue.sh"
+    heavy_turn_take "$2"
+    echo taken
+    sleep "$3"
+  ' hold "$ROOT" "$1" "$2"
+}
+
+# Waits up to five seconds for turn N to have an owner, so a test never races the holder it just started.
+wait_for_turn() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    [[ -f $KAPELOS_QUEUE_DIR/turn-${1:-1}/owner ]] && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+fresh_queue() {
+  jobs -p | xargs kill 2>/dev/null || true
+  wait 2>/dev/null || true
+  rm -rf "$KAPELOS_QUEUE_DIR"
+}
+
+# ------------------------------------------------------------------ what is heavy
+
+is_heavy() { heavy_command "$@"; }
+not_heavy() { ! heavy_command "$@"; }
+for line in "up" "demo" "magento-install" "adopt" "import" "deploy" "self-test" "modules add" "composer install" \
+  "composer require" "magento setup:upgrade" "setup:upgrade" "indexer:reindex" "setup:di:compile"; do
+  # shellcheck disable=SC2086 # the words are the command line
+  check "heavy: kapelos $line" is_heavy $line
+done
+for line in "info" "sites" "use" "env" "modules" "modules status" "composer show" "composer" "magento cache:flush" \
+  "cache:flush" "indexer:status" "repositories add"; do
+  # shellcheck disable=SC2086 # the words are the command line
+  check "not heavy: kapelos $line" not_heavy $line
+done
+
+# ------------------------------------------------------------------ taking turns
+
+fresh_queue
+hold first 3 >/dev/null &
+wait_for_turn
+start=$(date +%s)
+out="$(hold second 0 2>&1)"
+waited=$(($(date +%s) - start))
+check "a second job waits for the first" test "$waited" -ge 2
+check "and says what it waits on" grep -q "waiting for a turn at heavy work, second: busy with first" <<<"$out"
+check "and then takes its turn" grep -q '^taken$' <<<"$out"
+wait
+check "the turn is given back when its holder ends" test ! -e "$TURN"
+
+fresh_queue
+bash -c 'set -euo pipefail; die() { echo "kapelos: $*" >&2; exit 1; }; . "$1/lib/queue.sh"; heavy_turn_take failing; die "a step failed"' x "$ROOT" 2>/dev/null || true
+check "a holder that dies gives its turn back" test ! -e "$TURN"
+
+fresh_queue
+hold killed 30 >/dev/null 2>&1 &
+wait_for_turn
+# The holder is the process named in the owner file, not this script's background job around it.
+kill -9 "$(sed -n 1p "$TURN/owner")"
+out="$(KAPELOS_HEAVY_WAIT=4 hold after 0 2>&1)" || true
+check "a turn left by a killed holder is taken over" grep -q '^taken$' <<<"$out"
+check "and the takeover names what left it" grep -q "killed left its turn behind when it stopped; taking it" <<<"$out"
+
+fresh_queue
+mkdir -p "$TURN"
+printf '%s\n%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" "an old process" >"$TURN/owner"
+out="$(KAPELOS_HEAVY_WAIT=0 hold reuse 0 2>&1)" || true
+check "a pid now running something else is not the holder" grep -q '^taken$' <<<"$out"
+
+fresh_queue
+hold outer 3 >/dev/null &
+wait_for_turn
+start=$(date +%s)
+out="$(KAPELOS_HEAVY_TURN="$TURN" hold inner 0 2>&1)"
+check "a command inside one holding a turn goes straight on" test $(($(date +%s) - start)) -lt 2
+check "and does not give its caller's turn back" test -d "$TURN"
+fresh_queue
+
+hold one 3 >/dev/null &
+wait_for_turn
+start=$(date +%s)
+out="$(KAPELOS_HEAVY_AT_ONCE=2 hold two 0 2>&1)"
+check "KAPELOS_HEAVY_AT_ONCE=2 lets a second run beside the first" test $(($(date +%s) - start)) -lt 2
+fresh_queue
+
+hold long 5 >/dev/null &
+wait_for_turn
+status=0
+out="$(KAPELOS_HEAVY_WAIT=0 hold impatient 0 2>&1)" || status=$?
+check "KAPELOS_HEAVY_WAIT=0 gives up at once" test "$status" -ne 0
+check "and says what the turn is busy with" grep -q "waited 0s for a turn at heavy work and it is still busy with long" <<<"$out"
+fresh_queue
+
+mkdir -p "$TURN"
+status=0
+out="$(KAPELOS_HEAVY_WAIT=0 hold behind 0 2>&1)" || status=$?
+check "a turn with no owner yet counts as held" test "$status" -ne 0
+check "and is named as a job just starting" grep -q "busy with a job just starting" <<<"$out"
+touch -t 202001010000 "$TURN"
+out="$(KAPELOS_HEAVY_WAIT=0 hold later 0 2>&1)" || true
+check "an ownerless turn a minute old is taken over" grep -q '^taken$' <<<"$out"
+fresh_queue
+
+for bad in 0 abc 1.5; do
+  out="$(KAPELOS_HEAVY_AT_ONCE=$bad hold x 0 2>&1)" || true
+  check "KAPELOS_HEAVY_AT_ONCE=$bad is refused" grep -q "KAPELOS_HEAVY_AT_ONCE is $bad" <<<"$out"
+done
+for bad in -1 soon; do
+  out="$(KAPELOS_HEAVY_WAIT=$bad hold x 0 2>&1)" || true
+  check "KAPELOS_HEAVY_WAIT=$bad is refused" grep -q "KAPELOS_HEAVY_WAIT is $bad" <<<"$out"
+done
+
+echo
+if [[ $FAILURES -eq 0 ]]; then
+  echo "all passed"
+else
+  echo "$FAILURES failed"
+  exit 1
+fi
