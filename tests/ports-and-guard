@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# Per-site port slots, the guard across every Kapelos folder on one Docker daemon, and the check that a
+# site name belongs to one folder. Offline: docker is tests/stub-docker, and nothing starts a container.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+GIB=1073741824
+
+mkdir -p "$SCRATCH/bin"
+cp "$ROOT/tests/stub-docker" "$SCRATCH/bin/docker"
+export PATH="$SCRATCH/bin:$PATH"
+export STUB_DOCKER="$SCRATCH/docker"
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+reset_docker() {
+  rm -rf "$STUB_DOCKER"
+  mkdir -p "$STUB_DOCKER"
+  : >"$STUB_DOCKER/containers"
+  : >"$STUB_DOCKER/volumes"
+  : >"$STUB_DOCKER/calls"
+}
+
+# A checkout of its own: the entry point, the libraries and .env.example are all env and up need.
+checkout() {
+  mkdir -p "$1"
+  cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/.env.example" "$ROOT/compose.yaml" "$1/"
+  (cd -P "$1" && pwd)
+}
+
+# Passwords and the user's IDs differ on every run, so they are blanked before a comparison.
+masked() {
+  sed -E 's/^([A-Z_]*_PASSWORD)=.*/\1=/; s/^HOST_(UID|GID)=.*/HOST_\1=/' "$1"
+}
+
+# What kapelos env NAME wrote before slots existed: .env.example with three settings changed.
+expected_default_site() {
+  sed -e "s|^COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=kapelos-$2|" \
+    -e "s|^APP_HOST=.*|APP_HOST=$2.test|" \
+    -e "s|^MAGENTO_BASE_URL=.*|MAGENTO_BASE_URL=http://$2.test:8080/|" "$1/.env.example"
+}
+
+same_as_default_site() {
+  diff <(expected_default_site "$1" "$2") <(masked "$1/etc/sites/$2.env") >/dev/null
+}
+
+passwords_generated() {
+  grep -q '^DB_PASSWORD=.\{32\}$' "$1"
+}
+
+has_settings() {
+  local file="$1" pair
+  shift
+  for pair in "$@"; do
+    grep -qx "$pair" "$file" || return 1
+  done
+}
+
+# Every port a site file publishes, with the four kapelos scale adds above HTTP_PORT.
+published_ports() {
+  local http key
+  http="$(sed -n 's/^HTTP_PORT=//p' "$1")"
+  echo "$http" $((http + 1)) $((http + 2)) $((http + 3)) $((http + 4)) | tr ' ' '\n'
+  for key in HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT; do
+    sed -n "s/^$key=//p" "$1"
+  done
+}
+
+disjoint() {
+  [[ -z $(for file in "$@"; do published_ports "$file"; done | sort | uniq -d) ]]
+}
+
+refused() {
+  local dir="$1" expect="$2" out
+  shift 2
+  out="$(cd "$dir" && bin/kapelos "$@" 2>&1)" && return 1
+  grep -q -- "$expect" <<<"$out"
+}
+
+no_site_file() {
+  [[ ! -e $1/etc/sites/$2.env ]]
+}
+
+# --- ports ---------------------------------------------------------------
+
+reset_docker
+A="$(checkout "$SCRATCH/a")"
+B="$(checkout "$SCRATCH/b")"
+
+(cd "$A" && bin/kapelos env plain >/dev/null)
+check "no --slot writes today's defaults exactly" same_as_default_site "$A" plain
+check "no --slot still generates passwords" passwords_generated "$A/etc/sites/plain.env"
+(cd "$A" && bin/kapelos env zero --slot 0 >/dev/null)
+check "--slot 0 writes today's defaults exactly" same_as_default_site "$A" zero
+(cd "$A" && bin/kapelos env >/dev/null)
+check "a plain .env with no --slot is .env.example with passwords" diff <(masked "$A/.env.example") <(masked "$A/.env")
+
+(cd "$A" && bin/kapelos env one --slot 1 >/dev/null)
+check "slot 1 moves every port up by 100" has_settings "$A/etc/sites/one.env" \
+  HTTP_PORT=8180 HTTPS_PORT=8543 DB_PORT=13406 MAIL_UI_PORT=8125 OPENSEARCH_PORT=9300 RABBITMQ_UI_PORT=15772 LIVERELOAD_PORT=35829
+check "slot 1's base URL carries its own port" has_settings "$A/etc/sites/one.env" MAGENTO_BASE_URL=http://one.test:8180/ APP_HOST=one.test COMPOSE_PROJECT_NAME=kapelos-one
+(cd "$A" && bin/kapelos env two --slot=2 >/dev/null)
+check "slot 2 moves every port up by 200" has_settings "$A/etc/sites/two.env" \
+  HTTP_PORT=8280 HTTPS_PORT=8643 DB_PORT=13506 MAIL_UI_PORT=8225 OPENSEARCH_PORT=9400 RABBITMQ_UI_PORT=15872 LIVERELOAD_PORT=35929 \
+  MAGENTO_BASE_URL=http://two.test:8280/
+check "slots 0, 1 and 2 publish no port twice, scaled servers included" \
+  disjoint "$A/etc/sites/zero.env" "$A/etc/sites/one.env" "$A/etc/sites/two.env"
+check "only the ports and the base URL differ from the defaults" \
+  diff <(masked "$A/etc/sites/one.env" | grep -Ev '^(HTTP_PORT|HTTPS_PORT|DB_PORT|MAIL_UI_PORT|OPENSEARCH_PORT|RABBITMQ_UI_PORT|LIVERELOAD_PORT|MAGENTO_BASE_URL|APP_HOST|COMPOSE_PROJECT_NAME)=') \
+  <(masked "$A/.env.example" | grep -Ev '^(HTTP_PORT|HTTPS_PORT|DB_PORT|MAIL_UI_PORT|OPENSEARCH_PORT|RABBITMQ_UI_PORT|LIVERELOAD_PORT|MAGENTO_BASE_URL|APP_HOST|COMPOSE_PROJECT_NAME)=')
+(cd "$B" && bin/kapelos env --slot 1 >/dev/null)
+check "a plain .env takes a slot too" has_settings "$B/.env" HTTP_PORT=8180 MAGENTO_BASE_URL=http://magento.test:8180/
+
+(cd "$A" && bin/kapelos env top --slot 298 >/dev/null)
+check "the highest slot that fits, 298, is accepted" has_settings "$A/etc/sites/top.env" LIVERELOAD_PORT=65529 HTTP_PORT=37880
+check "slot 299 is refused: LiveReload would pass 65535" refused "$A" "LIVERELOAD_PORT at 65629, past the last port" env over --slot 299
+check "a refused slot writes no site file" no_site_file "$A" over
+for bad in -1 abc 01 1.5 ''; do
+  check "--slot '$bad' is refused" refused "$A" "takes a whole number" env bad --slot "$bad"
+done
+check "--slot with no number is refused" refused "$A" "takes a number" env bad --slot
+check "an unknown flag is refused" refused "$A" "doesn't know --port" env bad --port 8180
+check "a second site name is refused" refused "$A" "got a second" env bad worse
+
+# A slot is refused when its block would land on another slot's: here slot 0's Mailpit sits where slot 1's third scaled server does.
+C="$(checkout "$SCRATCH/c")"
+sed -i.bak 's/^MAIL_UI_PORT=.*/MAIL_UI_PORT=8182/' "$C/.env.example"
+check "a slot whose block lands on another slot's is refused" refused "$C" "slot 1 would put HTTP_PORT on 8182, which slot 0 uses for MAIL_UI_PORT" env clash --slot 1
+check "a block that lands on itself is refused too" refused "$C" "slot 0 would put MAIL_UI_PORT on 8182, which slot 1 uses for HTTP_PORT" env clash --slot 0
+
+# --- one name, one folder ---------------------------------------------------
+
+check "a name nothing on the daemon uses is quiet" bash -c "cd '$B' && [[ -z \$(bin/kapelos env fresh 2>&1 >/dev/null) ]]"
+
+reset_docker
+echo "c1|kapelos-taken|/elsewhere/kapelos|0|exited" >"$STUB_DOCKER/containers"
+check "a name with containers from another folder is refused" refused "$A" "already has containers from another Kapelos folder: /elsewhere/kapelos" env taken
+check "the refusal writes no site file" no_site_file "$A" taken
+
+reset_docker
+echo "kapelos-parked_db-data|kapelos-parked|" >"$STUB_DOCKER/volumes"
+check "a name with volumes and no container here is refused" refused "$A" "Docker already has volumes for kapelos-parked" env parked
+reset_docker
+echo "kapelos-kept_snapshot-clean-db-data||kapelos-kept" >"$STUB_DOCKER/volumes"
+check "a name with only snapshot volumes is refused as well" refused "$A" "kapelos-kept_snapshot-clean-db-data" env kept
+
+reset_docker
+echo "c2|kapelos-mine|$A|0|exited" >"$STUB_DOCKER/containers"
+echo "kapelos-mine_db-data|kapelos-mine|" >"$STUB_DOCKER/volumes"
+check "a name whose containers are this folder's is allowed" bash -c "cd '$A' && bin/kapelos env mine >/dev/null"
+
+reset_docker
+echo "c3|kapelos-slash|$A/|0|exited" >"$STUB_DOCKER/containers"
+check "this folder written with a trailing slash is still this folder" bash -c "cd '$A' && bin/kapelos env slash >/dev/null"
+reset_docker
+ln -s "$A" "$SCRATCH/a-link"
+echo "c4|kapelos-linked|$SCRATCH/a-link|0|exited" >"$STUB_DOCKER/containers"
+check "this folder reached through a symlink is still this folder" bash -c "cd '$A' && bin/kapelos env linked >/dev/null"
+
+reset_docker
+check "Docker not answering leaves env working, with a note" bash -c "
+  cd '$A' && out=\$(STUB_DOCKER_DOWN=yes bin/kapelos env offline 2>&1 >/dev/null) &&
+  [[ -f etc/sites/offline.env && \$out == *\"Docker isn't answering\"* ]]"
+
+# --- the guard across folders ------------------------------------------------
+
+reset_docker
+(cd "$A" && bin/kapelos env web >/dev/null)
+mkdir -p "$SCRATCH/store"
+sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$SCRATCH/store|" "$A/etc/sites/web.env"
+
+# cmd_up from the libraries in a process of its own, as bin/kapelos runs it, with scale_before_up
+# standing in for everything after the guards.
+cat >"$SCRATCH/up" <<EOF
+set -euo pipefail
+cd "$A"
+KAPELOS_HOME="$A"
+ENV_FILE=etc/sites/web.env
+SITES_DIR=etc/sites
+STORES_DIR=var/stores
+PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
+PORT_SLOT_STRIDE=100
+PROJECT_KEYS=""
+. lib/core.sh
+. lib/sites.sh
+. lib/stack.sh
+. lib/scale.sh
+scale_before_up() {
+  echo "reached the stack"
+  exit 0
+}
+cmd_up
+EOF
+
+run_up() {
+  bash "$SCRATCH/up" 2>&1
+}
+
+up_passes() {
+  local out
+  out="$(run_up)" || return 1
+  [[ $out == "reached the stack" ]]
+}
+
+up_refused() {
+  local out expect
+  out="$(run_up)" && return 1
+  for expect in "$@"; do
+    grep -qF -- "$expect" <<<"$out" || return 1
+  done
+}
+
+# Two stores from other folders run, 12 and 14 GiB of limits, beside a household service that isn't Kapelos's.
+cat >"$STUB_DOCKER/containers" <<EOF
+a1|kapelos-alpha|/srv/one|$((8 * GIB))|running
+a2|kapelos-alpha|/srv/one|$((4 * GIB))|running
+b1|kapelos-beta|/srv/two|$((14 * GIB))|running
+b2|kapelos-beta|/srv/two|0|running
+h1|household|/srv/home|$((6 * GIB))|running
+s1|kapelos-stopped|/srv/three|$((9 * GIB))|exited
+EOF
+# This site's resolved config: 13 GiB, written both the way Compose prints it and with a unit.
+cat >"$STUB_DOCKER/compose-config" <<EOF
+services:
+  php:
+    mem_limit: "$((12 * GIB))"
+  web:
+    mem_limit: 512m
+  mailpit:
+    mem_limit: "536870912"
+EOF
+
+unset KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB
+check "with neither setting, up passes" up_passes
+check "with neither setting, the guard asks Docker nothing more" bash -c "! grep -qE '^(inspect|compose)' '$STUB_DOCKER/calls'"
+
+export KAPELOS_MAX_RUNNING=2
+check "a third running store is refused by count" up_refused \
+  "would make 3 Kapelos stores running on this Docker, and KAPELOS_MAX_RUNNING is 2" \
+  "kapelos-alpha, 12.0 GiB of declared limits, from /srv/one" "kapelos-beta, 14.0 GiB of declared limits, from /srv/two"
+export KAPELOS_MAX_RUNNING=3
+check "a third store passes a limit of 3" up_passes
+unset KAPELOS_MAX_RUNNING
+
+export KAPELOS_MEM_BUDGET_GIB=30
+check "a store past the memory budget is refused, with the numbers" up_refused \
+  "declared memory limits of running Kapelos stores to 39.0 GiB: 26.0 GiB already running and 13.0 GiB for this site, over KAPELOS_MEM_BUDGET_GIB=30" \
+  "1 running container declares no memory limit and is not counted, so real use is higher"
+export KAPELOS_MEM_BUDGET_GIB=39
+check "a store that lands exactly on the budget passes" up_passes
+export KAPELOS_MAX_RUNNING=3 KAPELOS_MEM_BUDGET_GIB=40
+check "a store under both limits passes" up_passes
+unset KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB
+
+# The site itself already running is re-applied, not counted twice.
+echo "w1|kapelos-web|$A|$((13 * GIB))|running" >>"$STUB_DOCKER/containers"
+export KAPELOS_MAX_RUNNING=3 KAPELOS_MEM_BUDGET_GIB=39
+check "the site's own running containers are not counted against it" up_passes
+unset KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB
+
+echo "o1|kapelos-other|$A|0|running" >>"$STUB_DOCKER/containers"
+check "the one-site-per-folder guard is unchanged, and comes first" up_refused \
+  "kapelos-other is already running, and Kapelos runs one site at a time"
+
+reset_docker
+: >"$STUB_DOCKER/compose-config"
+for bad in two 0 -1 1.5; do
+  KAPELOS_MAX_RUNNING="$bad" check "KAPELOS_MAX_RUNNING=$bad is refused" up_refused "KAPELOS_MAX_RUNNING is $bad"
+  KAPELOS_MEM_BUDGET_GIB="$bad" check "KAPELOS_MEM_BUDGET_GIB=$bad is refused" up_refused "KAPELOS_MEM_BUDGET_GIB is $bad"
+done
+
+export KAPELOS_MAX_RUNNING=1
+check "with nothing else running, a limit of 1 passes" up_passes
+unset KAPELOS_MAX_RUNNING
+
+echo
+if [[ $FAILURES -gt 0 ]]; then
+  echo "$FAILURES failed"
+  exit 1
+fi
+echo "all passed"

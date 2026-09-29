@@ -2,6 +2,44 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016 # single-quoted code runs in a container's shell, which expands it
 
+# Off unless KAPELOS_MAX_RUNNING or KAPELOS_MEM_BUDGET_GIB is set. It counts every Kapelos project running on
+# the Docker daemon, from any folder, so two checkouts on one machine share one limit.
+require_room_on_daemon() {
+  local current="$1" max="${KAPELOS_MAX_RUNNING:-}" budget="${KAPELOS_MEM_BUDGET_GIB:-}"
+  [[ -n $max || -n $budget ]] || return 0
+  [[ -z $max || $max =~ ^[1-9][0-9]{0,2}$ ]] || die "KAPELOS_MAX_RUNNING is $max, and it takes a whole number of stores, 1 or more"
+  [[ -z $budget || $budget =~ ^[1-9][0-9]{0,4}$ ]] || die "KAPELOS_MEM_BUDGET_GIB is $budget, and it takes a whole number of GiB, 1 or more"
+  local running count used listing mine total
+  running="$(daemon_kapelos_containers | awk -v me="$current" '$1 != me')"
+  # One line per project: its name, its limits added up, and the folder it runs from.
+  listing="$(awk '
+    NF >= 2 { name = $1; memory[name] += $2; line = $0; sub(/^[^ ]+ [^ ]+ /, "", line); folder[name] = line }
+    END { for (name in memory) printf "  %s, %.1f GiB of declared limits, from %s\n", name, memory[name] / 1073741824, folder[name] }
+  ' <<<"$running" | sort)"
+  count="$(grep -c . <<<"$listing" || true)"
+  used="$(awk '{ total += $2 } END { printf "%.0f\n", total }' <<<"$running")"
+  [[ -n $listing ]] || listing="  none"
+  if [[ -n $max && $((count + 1)) -gt $max ]]; then
+    die "starting $current would make $((count + 1)) Kapelos stores running on this Docker, and KAPELOS_MAX_RUNNING is $max. Running now:
+$listing
+Stop one with kapelos down in its own folder first"
+  fi
+  [[ -n $budget ]] || return 0
+  mine="$(site_memory_limit)"
+  total=$((used + mine))
+  # Only declared limits can be added up; a container with none counts as nothing, so say how many there are.
+  local unlimited note=""
+  unlimited="$(awk '$2 == 0' <<<"$running" | grep -c . || true)"
+  [[ $unlimited -eq 0 ]] || note="
+$unlimited running container$([[ $unlimited -eq 1 ]] && echo " declares" || echo "s declare") no memory limit and $([[ $unlimited -eq 1 ]] && echo "is" || echo "are") not counted, so real use is higher"
+  if [[ $total -gt $((budget * 1073741824)) ]]; then
+    die "starting $current would bring the declared memory limits of running Kapelos stores to $(gib "$total") GiB: $(gib "$used") GiB already running and $(gib "$mine") GiB for this site, over KAPELOS_MEM_BUDGET_GIB=$budget.${note}
+Running now:
+$listing
+Stop one with kapelos down in its own folder first, or run this site with fewer services"
+  fi
+}
+
 # docker compose --wait gives up at once on a container still marked unhealthy from before, so restart those once and wait again.
 cmd_up() {
   load_env
@@ -9,6 +47,7 @@ cmd_up() {
   current="${COMPOSE_PROJECT_NAME:-kapelos}"
   other="$(running_projects | grep -vx "$current" | head -n 1 || true)"
   [[ -z $other ]] || die "$other is already running, and Kapelos runs one site at a time. Switch with kapelos use, or stop it with: docker compose -p $other down"
+  require_room_on_daemon "$current"
 
   # An adopted site whose adopt stopped part way starts and serves its own env.php, which
   # points at another stack's services, so the store is broken in a way nothing announces.

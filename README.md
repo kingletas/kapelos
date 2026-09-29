@@ -18,6 +18,7 @@ A *kapelos* was the small shopkeeper of an ancient Greek town. His bigger siblin
 - [How Kapelos is laid out](#how-kapelos-is-laid-out)
 - [Settings](#settings)
 - [Several projects](#several-projects)
+- [Two stores on one machine](#two-stores-on-one-machine)
 - [Running a store you already have](#running-a-store-you-already-have)
 - [A store's own settings](#a-stores-own-settings)
 - [Several storefronts](#several-storefronts)
@@ -197,7 +198,8 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `HTTP_PORT` | `8080` | The port the store answers on over HTTP |
 | `HTTPS_PORT` | `8443` | The port it answers on over HTTPS. See [HTTPS](#https) |
 | `DB_PORT` | `13306` | MariaDB, for a database tool on your machine |
-| `OPENSEARCH_PORT`, `RABBITMQ_UI_PORT`, `MAIL_UI_PORT` | `9200`, `15672`, `8025` | OpenSearch, RabbitMQ's management page and Mailpit, on your machine |
+| `OPENSEARCH_PORT`, `RABBITMQ_UI_PORT`, `MAIL_UI_PORT` | `9200`, `15672`, `8025` | OpenSearch, RabbitMQ's management page and Mailpit, on your machine. `env --slot` moves every port at once; see [Two stores on one machine](#two-stores-on-one-machine) |
+| `KAPELOS_MAX_RUNNING`, `KAPELOS_MEM_BUDGET_GIB` | *(none)* | Limits across every Kapelos folder on one Docker. See [Two stores on one machine](#two-stores-on-one-machine) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
@@ -225,9 +227,38 @@ bin/kapelos sites             # lists them, with a * on the active one
 
 `bin/kapelos site remove acme` deletes a site: its containers, database, search index, snapshots and the files Kapelos keeps for it. Kapelos lists everything first and asks you to type the site's name. The store's code stays where it is, unless Kapelos downloaded it into `var/stores/`.
 
-**One site runs at a time, and I built Kapelos that way on purpose.** A Magento stack wants several gigabytes of memory, and your computer is for the project in front of you. Switching is cheap instead: `use` stops the running site with its data kept, and the next `up` brings the other one back exactly as you left it. `up` refuses to start a second site while one is running, and says which. If you need several stores running side by side, that's what [Emporion](https://github.com/kingletas/emporion) is for.
+**One site runs at a time in each Kapelos folder, and I built Kapelos that way on purpose.** A Magento stack wants several gigabytes of memory, and your computer is for the project in front of you. Switching is cheap instead: `use` stops the running site with its data kept, and the next `up` brings the other one back exactly as you left it. `up` refuses to start a second site from the same folder while one is running, and says which. A machine with the memory for it can run a second folder beside the first, one store each; [Two stores on one machine](#two-stores-on-one-machine) says how. If you need many stores running side by side, that's what [Emporion](https://github.com/kingletas/emporion) is for.
 
 `.env` becomes a link to the active site's file, so `bin/kapelos`, `make` and plain `docker compose` always agree about which project they're working on. If you had a `.env` of your own, the first `use` turns it into a site called `default`, with nothing lost.
+
+## Two stores on one machine
+
+A host with the memory for it can run a store from each of two Kapelos folders: two checkouts, each with its own `etc/sites`. Each folder still runs one site at a time. Two things have to differ between the folders.
+
+**Ports.** Every site gets the same ports unless you say otherwise, so two running stores would both want 8080. `--slot` gives a site its own block, every port moved up by a hundred per slot:
+
+```bash
+bin/kapelos env acme --slot 1
+```
+
+| Slot | HTTP, and the scaled servers | HTTPS | MariaDB | Mailpit | OpenSearch | RabbitMQ | LiveReload |
+|---|---|---|---|---|---|---|---|
+| 0, or no `--slot` | 8080, 8081 to 8084 | 8443 | 13306 | 8025 | 9200 | 15672 | 35729 |
+| 1 | 8180, 8181 to 8184 | 8543 | 13406 | 8125 | 9300 | 15772 | 35829 |
+| 2 | 8280, 8281 to 8284 | 8643 | 13506 | 8225 | 9400 | 15872 | 35929 |
+
+The site's `MAGENTO_BASE_URL` carries its own HTTP port, `http://acme.test:8180/` here. A hundred leaves room for the four [web servers](#more-web-servers-and-a-database-replica) above `HTTP_PORT`, and no two slots share a port. `env` refuses a slot whose ports would pass 65535, or land on another slot's. Give every site in one folder that folder's slot, and install each store with the address it will be reached at, since Magento redirects to the address in its database.
+
+**Site names.** Docker names a site's containers and volumes `kapelos-NAME` across the whole machine, so one name in two folders would share one set of containers and one database. `env NAME` refuses a name whose containers belong to another folder. Volumes don't record which folder made them, so it also refuses a name that has volumes and no container in this folder, and says how to remove them if they are this folder's own leftovers.
+
+**A limit across both folders.** The one-site-per-folder check can't see the other folder, so two folders could start as many stores as they like between them. Set a limit for the whole machine, in the environment of whoever runs Kapelos, or in each site's file:
+
+```bash
+export KAPELOS_MAX_RUNNING=2       # at most two Kapelos stores running on this Docker
+export KAPELOS_MEM_BUDGET_GIB=30   # and their declared memory limits add up to 30 GiB or less
+```
+
+`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them, and then `up` checks only its own folder, as it always has.
 
 ## Running a store you already have
 
@@ -801,7 +832,7 @@ bin/kapelos self-test
 
 I left these out on purpose. Each one would make Kapelos bigger, and [Emporion](https://github.com/kingletas/emporion) already does them:
 
-- **Several stores running at once.** Kapelos switches between projects instead. See [Several projects](#several-projects).
+- **Many stores running at once.** Kapelos switches between projects instead, one running store per folder. Two folders on a machine with the memory can run one each; see [Two stores on one machine](#two-stores-on-one-machine).
 - **No image of your application.** Your code is mounted, never built into an image.
 - **No Kubernetes.**
 

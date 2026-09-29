@@ -2,19 +2,102 @@
 # shellcheck shell=bash
 
 cmd_env() {
-  local name="${1:-}"
+  local name="" slot=0 pairs=() key
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slot)
+        [[ $# -ge 2 ]] || die "--slot takes a number, for example: kapelos env acme --slot 1"
+        slot="$2"
+        shift 2
+        ;;
+      --slot=*)
+        slot="${1#--slot=}"
+        shift
+        ;;
+      -*) die "env doesn't know $1. See: kapelos help" ;;
+      *)
+        [[ -z $name ]] || die "env takes one site name, and got a second: $1"
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+  require_port_slot "$slot"
+  for key in $PORT_KEYS; do
+    pairs+=("$key=$(slot_port "$key" "$slot")")
+  done
   if [[ -z $name ]]; then
-    write_env .env
+    write_env .env "${pairs[@]}" "MAGENTO_BASE_URL=http://magento.test:$(slot_port HTTP_PORT "$slot")/"
     echo "Wrote .env. Set MAGENTO_SRC in it to your Magento tree, then run: kapelos up"
     return
   fi
   valid_site_name "$name"
+  require_name_free_on_daemon "$name"
   mkdir -p "$SITES_DIR"
   write_env "$SITES_DIR/$name.env" \
     "COMPOSE_PROJECT_NAME=kapelos-$name" \
     "APP_HOST=$name.test" \
-    "MAGENTO_BASE_URL=http://$name.test:8080/"
+    "${pairs[@]}" \
+    "MAGENTO_BASE_URL=http://$name.test:$(slot_port HTTP_PORT "$slot")/"
   echo "Wrote $SITES_DIR/$name.env. Set MAGENTO_SRC in it, then: kapelos use $name && kapelos up"
+}
+
+# A slot's port for KEY: the default in .env.example, moved up by one stride per slot.
+slot_port() {
+  local base
+  base="$(env_value .env.example "$1")"
+  [[ $base =~ ^[0-9]+$ ]] || die ".env.example has no port for $1"
+  printf '%s' "$((base + $2 * PORT_SLOT_STRIDE))"
+}
+
+# The ports a slot publishes, as KEY PORT lines. HTTP_PORT brings the four above it that kapelos scale's servers take.
+slot_block() {
+  local key port n
+  for key in $PORT_KEYS; do
+    port="$(slot_port "$key" "$1")"
+    echo "$key $port"
+    if [[ $key == HTTP_PORT ]]; then
+      for n in 1 2 3 4; do echo "$key+$n $((port + n))"; done
+    fi
+  done
+}
+
+# A slot is refused when a port would pass 65535, or would be a port another slot, or this one, already publishes.
+require_port_slot() {
+  local slot="$1" key port other_key other_port gap block zero
+  [[ $slot =~ ^(0|[1-9][0-9]{0,4})$ ]] || die "--slot takes a whole number, 0 for the default ports, and got: $slot"
+  block="$(slot_block "$slot")"
+  zero="$(slot_block 0)"
+  while read -r key port; do
+    [[ $port -le 65535 ]] || die "slot $slot would put ${key%%+*} at $port, past the last port, 65535. Pick a lower slot"
+    while read -r other_key other_port; do
+      gap=$((port - other_port))
+      [[ $gap -ge 0 && $((gap % PORT_SLOT_STRIDE)) -eq 0 ]] || continue
+      [[ $((gap / PORT_SLOT_STRIDE)) -ne $slot || $other_key != "$key" ]] || continue
+      die "slot $slot would put ${key%%+*} on $port, which slot $((gap / PORT_SLOT_STRIDE)) uses for ${other_key%%+*}"
+    done <<<"$zero"
+  done <<<"$block"
+}
+
+# Compose names containers and volumes kapelos-NAME on the whole Docker daemon, so a name another checkout
+# uses would share its containers and its database. Volumes carry no folder, so ones no container here claims are refused.
+require_name_free_on_daemon() {
+  local project="kapelos-$1" folders elsewhere volumes
+  command -v docker >/dev/null || return 0
+  if ! folders="$(docker ps -a --filter "label=com.docker.compose.project=$project" \
+    --format '{{.Label "com.docker.compose.project.working_dir"}}' 2>/dev/null)"; then
+    echo "kapelos: Docker isn't answering, so no check was made that another Kapelos folder doesn't already use the name $1" >&2
+    return 0
+  fi
+  folders="$(while IFS= read -r folder; do [[ -z $folder ]] || physical_dir "$folder"; done <<<"$folders")"
+  elsewhere="$(grep -vxF "$KAPELOS_HOME" <<<"$folders" | grep -v '^$' | sort -u | tr '\n' ' ' || true)"
+  [[ -z $elsewhere ]] || die "$project already has containers from another Kapelos folder: $elsewhere
+One name in two folders shares one set of containers and one database. Pick another name"
+  grep -qxF "$KAPELOS_HOME" <<<"$folders" && return 0
+  volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$project"; docker volume ls -q --filter "label=kapelos.snapshot.project=$project")"
+  volumes="$(grep -v '^$' <<<"$volumes" | tr '\n' ' ' || true)"
+  [[ -z $volumes ]] || die "Docker already has volumes for $project, and no container in this folder says they are this folder's: $volumes
+Another Kapelos folder may have a site called $1 parked. Pick another name, or, if they are left from a site of this folder, remove them with: docker volume rm $volumes"
 }
 
 site_of_project() {

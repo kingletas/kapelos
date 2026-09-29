@@ -266,6 +266,46 @@ running_projects() {
     --format '{{.Label "com.docker.compose.project"}}' | sort -u
 }
 
+# Every running Kapelos container on the Docker daemon, whichever folder started it, as
+# "project memory-limit-in-bytes folder" lines. A container with no limit reports 0.
+# A folder as its physical path, so a symlink or a trailing slash names the same folder. One that no longer
+# exists keeps its spelling, less any trailing slash.
+physical_dir() {
+  if [[ -d $1 ]]; then (cd -P -- "$1" && pwd); else printf '%s\n' "${1%/}"; fi
+}
+
+daemon_kapelos_containers() {
+  local ids
+  ids="$(docker ps -q --filter label=com.docker.compose.project)" || die "Docker isn't answering, so Kapelos can't count the stores running on it"
+  [[ -n $ids ]] || return 0
+  # A container that stops between the two calls is no longer running, so its error is dropped.
+  # shellcheck disable=SC2086 # one word per container
+  { docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}} {{.HostConfig.Memory}} {{index .Config.Labels "com.docker.compose.project.working_dir"}}' $ids 2>/dev/null || true; } |
+    awk '$1 == "kapelos" || index($1, "kapelos-") == 1'
+}
+
+# The sum of this site's mem_limit values, in bytes, from Compose's own resolved config, so profiles, cron and scaled servers count.
+site_memory_limit() {
+  compose config | awk '
+    function bytes(v, n, unit) {
+      gsub(/"/, "", v)
+      n = v + 0
+      unit = tolower(v)
+      sub(/^[0-9.]+/, "", unit)
+      if (unit ~ /^k/) n *= 1024
+      else if (unit ~ /^m/) n *= 1048576
+      else if (unit ~ /^g/) n *= 1073741824
+      return n
+    }
+    $1 == "mem_limit:" { total += bytes($2) }
+    END { printf "%.0f\n", total }
+  '
+}
+
+gib() {
+  awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'
+}
+
 require_running() {
   local running service
   running="$(compose ps --status running --services 2>/dev/null)"

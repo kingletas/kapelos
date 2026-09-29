@@ -10,6 +10,8 @@ bin/kapelos check
 
 That's everything a commit has to pass. `make check` runs the same thing. `check` makes sure both compose layouts are valid, that a missing `MAGENTO_SRC` is refused, and that the scripts and YAML are clean. It needs Docker, `shellcheck` and `yamllint`.
 
+`check` also runs `tests/ports-and-guard`, which tests port slots, the limit across Kapelos folders and the one-name-per-folder check against a stand-in `docker`. It starts nothing, so it runs on its own without Docker too.
+
 If you changed the PHP image, run this too:
 
 ```bash
