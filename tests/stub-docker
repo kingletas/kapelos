@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A stand-in for docker that answers from files in $STUB_DOCKER, logs every call, and starts nothing.
-# containers holds id|project|folder|memory|state lines, volumes holds name|project|snapshot-project lines,
+# containers holds id|project|folder|memory|state lines, with an optional sixth field for the bytes in use that
+# docker stats reports; volumes holds name|project|snapshot-project lines,
 # and compose-config is what docker compose config prints.
 set -euo pipefail
 
@@ -19,7 +20,7 @@ unexpected() {
 }
 
 stub_ps() {
-  local all=no quiet=no filter="" format="" id project folder memory state
+  local all=no quiet=no filter="" format="" id project folder memory state usage
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -a) all=yes ;;
@@ -36,7 +37,7 @@ stub_ps() {
     esac
     shift
   done
-  while IFS='|' read -r id project folder memory state; do
+  while IFS='|' read -r id project folder memory state usage; do
     [[ -n $id ]] || continue
     [[ $all == yes || $state == running ]] || continue
     case "$filter" in
@@ -56,14 +57,27 @@ stub_ps() {
 }
 
 stub_inspect() {
-  local id want project folder memory state
+  local id want project folder memory state usage
   [[ ${1:-} == --format ]] || unexpected inspect "$@"
   shift 2
   for want in "$@"; do
-    while IFS='|' read -r id project folder memory state; do
+    while IFS='|' read -r id project folder memory state usage; do
       if [[ $id == "$want" ]]; then
         echo "$project $memory $folder"
       fi
+    done <"$containers"
+  done
+}
+
+# docker stats --no-stream --format '{{.MemUsage}}' ID...: the sixth field in MiB, as Docker prints it, over the limit.
+stub_stats() {
+  local want id project folder memory state usage
+  [[ ${1:-} == --no-stream && ${2:-} == --format ]] || unexpected stats "$@"
+  shift 3
+  for want in "$@"; do
+    while IFS='|' read -r id project folder memory state usage; do
+      [[ $id == "$want" ]] || continue
+      awk -v u="${usage:-0}" -v m="$memory" 'BEGIN { printf "%.1fMiB / %.0fMiB\n", u / 1048576, m / 1048576 }'
     done <"$containers"
   done
 }
@@ -94,6 +108,10 @@ case "${1:-}" in
     shift
     stub_inspect "$@"
     ;;
+  stats)
+    shift
+    stub_stats "$@"
+    ;;
   volume)
     [[ ${2:-} == ls ]] || unexpected "$@"
     shift 2
@@ -105,6 +123,8 @@ case "${1:-}" in
         cat "$STUB_DOCKER/compose-config"
         exit 0
       fi
+      # Stopping is logged in calls, which is all a test needs of it.
+      [[ $arg != down ]] || exit 0
     done
     unexpected "$@"
     ;;

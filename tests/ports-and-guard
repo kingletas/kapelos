@@ -13,6 +13,11 @@ mkdir -p "$SCRATCH/bin"
 cp "$ROOT/tests/stub-docker" "$SCRATCH/bin/docker"
 export PATH="$SCRATCH/bin:$PATH"
 export STUB_DOCKER="$SCRATCH/docker"
+# The machine as up's room check sees it: idle, with plenty free, so these tests judge the limits across
+# folders alone.
+printf 'MemAvailable: %s kB\n' $((512 * 1024 * 1024)) >"$SCRATCH/meminfo"
+echo "0.00 0.00 0.00 1/100 1" >"$SCRATCH/loadavg"
+export KAPELOS_MEMINFO="$SCRATCH/meminfo" KAPELOS_LOADAVG="$SCRATCH/loadavg"
 
 result() {
   if [[ $1 -eq 0 ]]; then
@@ -250,7 +255,9 @@ EOF
 
 unset KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB
 check "with neither setting, up passes" up_passes
-check "with neither setting, the guard asks Docker nothing more" bash -c "! grep -qE '^(inspect|compose)' '$STUB_DOCKER/calls'"
+: >"$STUB_DOCKER/calls"
+KAPELOS_RESERVE_GIB=0 KAPELOS_MAX_LOAD=0 check "with every limit off, up asks Docker nothing more" up_passes
+check "and so makes no call past the list of this folder's sites" bash -c "! grep -qE '^(inspect|compose)' '$STUB_DOCKER/calls'"
 
 export KAPELOS_MAX_RUNNING=2
 check "a third running store is refused by count" up_refused \
@@ -277,8 +284,7 @@ check "the site's own running containers are not counted against it" up_passes
 unset KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB
 
 echo "o1|kapelos-other|$A|0|running" >>"$STUB_DOCKER/containers"
-check "the one-site-per-folder guard is unchanged, and comes first" up_refused \
-  "kapelos-other is already running, and Kapelos runs one site at a time"
+check "a second running site of this folder no longer stops up: it is admitted by room" up_passes
 
 reset_docker
 : >"$STUB_DOCKER/compose-config"

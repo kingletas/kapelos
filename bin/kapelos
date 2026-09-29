@@ -76,22 +76,27 @@ Getting a store
   demo                   Download and install a demo store, with no questions
   interactive            Ask a few questions, then set a store up without asking again
   env [SITE] [--slot N]  Write settings with generated passwords: .env, or etc/sites/SITE.env.
-                         --slot N moves every port up by N hundred, for a second store on one Docker
+                         A site gets the first block of ports no other site here uses; --slot N
+                         picks block N, every port up by N hundred
   adopt PATH --datadir DIR | --dump FILE [--name SITE] [--url URL] [--store HOST=CODE] [--proxy NETWORK] [--no-reindex]
                          Run a store you already have, as it is: its code where it lives, a copy of
                          its database, and its own env.php untouched
 
 Sites, for more than one project
-  sites                  List the sites and which one is active
+  sites                  List the sites, which one is active, and the memory and port of each
   trust [PATH]           Allow a store's .kapelos/compose.yaml and .kapelos/commands to run
   stores [apply]         Which store each hostname in STORES runs; apply sets their addresses
-  use SITE               Switch to a site, stopping whichever one is running
+  use SITE               Make SITE the one plain commands act on; nothing running stops
   site audit [SITE]      Check a site for vulnerable dependencies, credentials and unsafe settings
+  site ports SITE [--slot N]
+                         Move a stopped site to a block of ports of its own, the first free one
+                         unless --slot says which, and print how to move its store's address
   site remove SITE [-y]  Delete a site's containers, database, snapshots and files; its code stays
 
 The stack
   up                     Start everything, or apply a change to the settings, and wait until it serves
-  down                   Stop everything, keeping the database and search index
+  down [SITE]            Stop the active site, or SITE, keeping the database and search index
+  stop-others            Stop every running site of this folder but the active one
   restart [SERVICE...]   Restart services, after editing a file in etc/
   ps                     What is running, and whether it is healthy
   logs [SERVICE...]      Follow the logs
@@ -187,7 +192,7 @@ main() {
     deploy) cmd_deploy ;;
     develop) cmd_develop ;;
     doctor) cmd_doctor ;;
-    down) compose down ;;
+    down) cmd_down "$@" ;;
     drexbot) cmd_drexbot "$@" ;;
     env) cmd_env "$@" ;;
     help | -h | --help) usage ;;
@@ -211,6 +216,7 @@ main() {
     site) cmd_site "$@" ;;
     sites) cmd_sites ;;
     snapshot) cmd_snapshot "$@" ;;
+    stop-others) cmd_stop_others ;;
     stores) cmd_stores "$@" ;;
     test) cmd_test "$@" ;;
     trust) cmd_trust "$@" ;;

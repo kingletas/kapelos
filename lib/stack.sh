@@ -40,13 +40,156 @@ Stop one with kapelos down in its own folder first, or run this site with fewer 
   fi
 }
 
+# --- room for another store ----------------------------------------------
+# A first store always starts, as it always has. Another starts only if, after what it used when it last
+# ran, KAPELOS_RESERVE_GIB of memory stays free and the machine's five-minute load is under KAPELOS_MAX_LOAD.
+# Either set to 0 is off. The defaults are a first guess; the knee measured on a real host replaces them.
+DEFAULT_RESERVE_GIB=8
+# What a site that has never been measured counts as: a stack with sample data idles near this.
+UNMEASURED_SITE_GIB=6
+GIB_BYTES=1073741824
+
+# Memory this machine can still hand out, in bytes. Linux says so directly. On macOS free, inactive and
+# speculative pages can all be handed out; that path was written without a Mac to try it on.
+host_available_bytes() {
+  local meminfo="${KAPELOS_MEMINFO:-/proc/meminfo}" page
+  if [[ -r $meminfo ]]; then
+    awk '$1 == "MemAvailable:" { printf "%.0f\n", $2 * 1024; found = 1 } END { exit !found }' "$meminfo"
+    return
+  fi
+  page="$(sysctl -n hw.pagesize 2>/dev/null)" || return 1
+  vm_stat 2>/dev/null | awk -v page="$page" '
+    /^Pages (free|inactive|speculative):/ { gsub(/\./, "", $NF); pages += $NF }
+    END { if (pages > 0) printf "%.0f\n", pages * page; else exit 1 }'
+}
+
+# The five-minute load average: sustained work, not a moment's burst.
+host_load() {
+  local loadavg="${KAPELOS_LOADAVG:-/proc/loadavg}"
+  if [[ -r $loadavg ]]; then
+    awk '{ print $2 }' "$loadavg"
+    return
+  fi
+  # macOS prints { 1.20 1.45 1.67 }.
+  sysctl -n vm.loadavg 2>/dev/null | awk '{ print $3 }' | grep .
+}
+
+host_cores() {
+  getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1
+}
+
+footprint_file() {
+  printf '%s/footprint' "$(site_state_dir_of "$1")"
+}
+
+# The memory a project's running containers use now, in bytes, as docker stats reports it.
+project_memory_now() {
+  local ids
+  ids="$(docker ps -q --filter "label=com.docker.compose.project=$1" 2>/dev/null)" || return 1
+  [[ -n $ids ]] || return 1
+  # shellcheck disable=SC2086 # one word per container
+  docker stats --no-stream --format '{{.MemUsage}}' $ids 2>/dev/null | awk '
+    {
+      v = $1; n = v + 0; unit = v
+      sub(/^[0-9.]+/, "", unit)
+      if (unit == "KiB" || unit == "kB") n *= 1024
+      else if (unit == "MiB" || unit == "MB") n *= 1048576
+      else if (unit == "GiB" || unit == "GB") n *= 1073741824
+      total += n
+    }
+    END { printf "%.0f\n", total }'
+}
+
+# Keeps what a running site uses, so the next start of it is admitted against a real number.
+record_footprint() {
+  local bytes file
+  bytes="$(project_memory_now "$1")" || return 0
+  [[ $bytes =~ ^[0-9]+$ && $bytes -gt 0 ]] || return 0
+  file="$(footprint_file "$1")"
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$bytes" >"$file"
+}
+
+recorded_footprint() {
+  local bytes
+  bytes="$(cat "$(footprint_file "$1")" 2>/dev/null)" || return 1
+  [[ $bytes =~ ^[0-9]+$ ]] && printf '%s' "$bytes"
+}
+
+require_room_for_another() {
+  local current="$1" others reserve max_load cores available need load said
+  reserve="${KAPELOS_RESERVE_GIB:-$DEFAULT_RESERVE_GIB}"
+  cores="$(host_cores)"
+  max_load="${KAPELOS_MAX_LOAD:-$(awk -v c="$cores" 'BEGIN { printf "%g\n", c * 0.75 }')}"
+  [[ $reserve =~ ^[0-9]{1,5}$ ]] || die "KAPELOS_RESERVE_GIB is $reserve, and it takes the whole GiB of memory to keep free, 0 for no reserve"
+  [[ $max_load =~ ^[0-9]{1,4}([.][0-9]+)?$ ]] || die "KAPELOS_MAX_LOAD is $max_load, and it takes a load average such as 6 or 5.5, 0 for no limit"
+  [[ $reserve != 0 || $max_load != 0 ]] || return 0
+  others="$(daemon_kapelos_containers | awk -v me="$current" '$1 != me { print $1 }' | sort -u | sed 's/^kapelos-//' | tr '\n' ' ')"
+  [[ -n $others ]] || return 0
+  if [[ $reserve -gt 0 ]]; then
+    if available="$(host_available_bytes)"; then
+      if need="$(recorded_footprint "$current")"; then
+        said="it used $(gib "$need") GiB when it last ran"
+      else
+        need=$((UNMEASURED_SITE_GIB * GIB_BYTES))
+        said="it has never been measured, so it counts as $UNMEASURED_SITE_GIB GiB"
+      fi
+      [[ $((available - need)) -ge $((reserve * GIB_BYTES)) ]] ||
+        die "starting ${current#kapelos-} would leave $(gib $((available - need))) GiB of memory free: $(gib "$available") GiB is free now, and $said. KAPELOS_RESERVE_GIB keeps $reserve GiB free.
+Running now: $others
+Stop one with kapelos down SITE, in the folder it runs from"
+    else
+      echo "kapelos: can't read how much memory this machine has free, so the reserve isn't checked" >&2
+    fi
+  fi
+  [[ $max_load != 0 ]] || return 0
+  if ! load="$(host_load)"; then
+    echo "kapelos: can't read this machine's load, so KAPELOS_MAX_LOAD isn't checked" >&2
+    return 0
+  fi
+  awk -v l="$load" -v m="$max_load" 'BEGIN { exit !(l > m) }' || return 0
+  die "this machine's load over the last five minutes is $load, over KAPELOS_MAX_LOAD=$max_load on $cores cores, so ${current#kapelos-} waits for it to settle.
+Running now: $others"
+}
+
+# A site can't start beside a running site of this folder that publishes one of the same ports.
+require_ports_free() {
+  local current="$1" project file key mine theirs
+  for project in $(running_projects); do
+    [[ $project != "$current" ]] || continue
+    file="$(site_of_project "$project")"
+    [[ -n $file ]] || continue
+    for key in $PORT_KEYS; do
+      mine="${!key:-$(env_value .env.example "$key")}"
+      theirs="$(env_value "$file" "$key")"
+      [[ -n $theirs ]] || theirs="$(env_value .env.example "$key")"
+      [[ $mine != "$theirs" ]] ||
+        die "${current#kapelos-} and ${project#kapelos-}, which is running, both publish $key on $mine. Stop it with kapelos down ${project#kapelos-}, or give one of them its own ports with kapelos site ports SITE"
+    done
+  done
+}
+
+# The info line for this site's ports: its slot and every port in it, or the ports as set by hand.
+site_block_words() {
+  local slot
+  if slot="$(slot_of_site "$(follow_link "$ENV_FILE")")"; then
+    printf 'slot %s: HTTP %s (and the four above it for more web servers), HTTPS %s, MariaDB %s, Mailpit %s, OpenSearch %s, RabbitMQ %s, LiveReload %s' \
+      "$slot" "${HTTP_PORT:-8080}" "${HTTPS_PORT:-8443}" "${DB_PORT:-13306}" "${MAIL_UI_PORT:-8025}" "${OPENSEARCH_PORT:-9200}" "${RABBITMQ_UI_PORT:-15672}" "${LIVERELOAD_PORT:-35729}"
+  else
+    printf 'set by hand, off the slots: HTTP %s, HTTPS %s, MariaDB %s' "${HTTP_PORT:-8080}" "${HTTPS_PORT:-8443}" "${DB_PORT:-13306}"
+  fi
+}
+
 # docker compose --wait gives up at once on a container still marked unhealthy from before, so restart those once and wait again.
 cmd_up() {
   load_env
-  local current other
+  local current
   current="${COMPOSE_PROJECT_NAME:-kapelos}"
-  other="$(running_projects | grep -vx "$current" | head -n 1 || true)"
-  [[ -z $other ]] || die "$other is already running, and Kapelos runs one site at a time. Switch with kapelos use, or stop it with: docker compose -p $other down"
+  # A site already up is being told about a change to its settings, not started.
+  if ! running_projects | grep -qx "$current"; then
+    require_ports_free "$current"
+    require_room_for_another "$current"
+  fi
   require_room_on_daemon "$current"
 
   # An adopted site whose adopt stopped part way starts and serves its own env.php, which
@@ -403,6 +546,7 @@ cmd_info() {
 
   Site         $site, $state. Settings in $(follow_link "$ENV_FILE")
   Code         ${MAGENTO_SRC:-not set}
+  Ports        $(site_block_words)
 
   Store        ${MAGENTO_BASE_URL:-not set}
   Admin        ${MAGENTO_BASE_URL%/}/${MAGENTO_ADMIN_URI:-admin}

@@ -166,7 +166,7 @@ cmd_adopt() {
     echo "        $(tr '\n' ' ' <<<"$encoded")"
     settings+=("INSTALL_SOURCEGUARDIAN=true")
   fi
-  require_free_to_switch adopt "kapelos-$name"
+  require_room_to_set_up "kapelos-$name"
   mkdir -p "$SITES_DIR" "var/sites/$name"
   write_env "$SITES_DIR/$name.env" "${settings[@]}"
   # The self-test adopts a store without changing which site you're on.

@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# Several sites from one folder at once: up admits another store by the memory and load left, refuses a
+# site whose ports a running one publishes, use stops nothing, down SITE and stop-others stop what they
+# name, and sites shows what each uses. Offline: docker is tests/stub-docker, and nothing starts a container.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+GIB=1073741824
+
+mkdir -p "$SCRATCH/bin"
+cp "$ROOT/tests/stub-docker" "$SCRATCH/bin/docker"
+export PATH="$SCRATCH/bin:$PATH"
+export STUB_DOCKER="$SCRATCH/docker"
+export KAPELOS_MEMINFO="$SCRATCH/meminfo" KAPELOS_LOADAVG="$SCRATCH/loadavg"
+unset KAPELOS_RESERVE_GIB KAPELOS_MAX_LOAD KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+reset_docker() {
+  rm -rf "$STUB_DOCKER"
+  mkdir -p "$STUB_DOCKER"
+  : >"$STUB_DOCKER/containers"
+  : >"$STUB_DOCKER/volumes"
+  : >"$STUB_DOCKER/calls"
+  : >"$STUB_DOCKER/compose-config"
+}
+
+# The machine as the room check reads it: GiB available, and the five-minute load.
+machine() {
+  printf 'MemAvailable: %s kB\n' $(($1 * 1024 * 1024)) >"$KAPELOS_MEMINFO"
+  echo "0.00 $2 0.00 1/100 1" >"$KAPELOS_LOADAVG"
+}
+
+reset_docker
+machine 64 0.00
+A="$SCRATCH/a"
+mkdir -p "$A" "$SCRATCH/store"
+cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/.env.example" "$ROOT/compose.yaml" "$A/"
+A="$(cd -P "$A" && pwd)"
+kapelos() { (cd "$A" && bin/kapelos "$@"); }
+kapelos env web >/dev/null
+# On web's ports on purpose, as every site was before slots: the clash up has to refuse.
+kapelos env other --slot 0 >/dev/null
+out="$(kapelos env apart)"
+check "a new site gets the first block of ports no other site here uses" grep -qx HTTP_PORT=8180 "$A/etc/sites/apart.env"
+check "and says so" grep -q "Slot 0's ports are taken by another site here, so apart gets slot 1." <<<"$out"
+check "the first site of a folder still gets slot 0" grep -qx HTTP_PORT=8080 "$A/etc/sites/web.env"
+for site in web other apart; do
+  sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$SCRATCH/store|" "$A/etc/sites/$site.env"
+done
+
+# cmd_up for one site in a process of its own, as bin/kapelos runs it, stopping where the stack would start.
+cat >"$SCRATCH/up" <<EOF
+set -euo pipefail
+cd "$A"
+KAPELOS_HOME="$A"
+ENV_FILE="etc/sites/\$1.env"
+SITES_DIR=etc/sites
+STORES_DIR=var/stores
+PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
+PORT_SLOT_STRIDE=100
+PROJECT_KEYS=""
+. lib/core.sh
+. lib/sites.sh
+. lib/stack.sh
+. lib/scale.sh
+scale_before_up() {
+  echo "reached the stack"
+  exit 0
+}
+cmd_up
+EOF
+
+up_passes() {
+  local out
+  out="$(bash "$SCRATCH/up" "$1" 2>&1)" || return 1
+  [[ $out == "reached the stack" ]]
+}
+
+up_refused() {
+  local site="$1" out expect
+  shift
+  out="$(bash "$SCRATCH/up" "$site" 2>&1)" && return 1
+  for expect in "$@"; do
+    grep -qF -- "$expect" <<<"$out" || return 1
+  done
+}
+
+running() {
+  echo "$1|kapelos-$2|$A|$((8 * GIB))|running|$3" >>"$STUB_DOCKER/containers"
+}
+
+# --- room for another store ----------------------------------------------
+
+machine 1 0.00
+check "a first store starts whatever is free, as before" up_passes web
+
+reset_docker
+running a1 apart $((3 * GIB))
+machine 20 0.00
+check "another store starts when the reserve stays free after it" up_passes web
+machine 12 0.00
+check "and is refused when it would eat into the reserve, with the numbers" up_refused web \
+  "starting web would leave 6.0 GiB of memory free: 12.0 GiB is free now, and it has never been measured, so it counts as 6 GiB. KAPELOS_RESERVE_GIB keeps 8 GiB free." \
+  "Running now: apart"
+mkdir -p "$A/var/sites/web"
+echo $((2 * GIB)) >"$A/var/sites/web/footprint"
+check "a site measured small is admitted where an unmeasured one isn't" up_passes web
+echo $((5 * GIB)) >"$A/var/sites/web/footprint"
+check "a measured site is refused on what it used" up_refused web "and it used 5.0 GiB when it last ran"
+KAPELOS_RESERVE_GIB=0 check "KAPELOS_RESERVE_GIB=0 turns the reserve off" up_passes web
+KAPELOS_RESERVE_GIB=4 check "a smaller reserve admits it" up_passes web
+rm -f "$A/var/sites/web/footprint"
+
+machine 64 7.00
+KAPELOS_MAX_LOAD=6 check "a machine over KAPELOS_MAX_LOAD holds another store back" up_refused web \
+  "this machine's load over the last five minutes is 7.00, over KAPELOS_MAX_LOAD=6"
+machine 64 5.00
+KAPELOS_MAX_LOAD=6 check "and admits it once the load is under" up_passes web
+machine 64 99.00
+KAPELOS_MAX_LOAD=0 check "KAPELOS_MAX_LOAD=0 turns the load check off" up_passes web
+
+machine 64 0.00
+for bad in -1 8.5 lots; do
+  KAPELOS_RESERVE_GIB="$bad" check "KAPELOS_RESERVE_GIB=$bad is refused" up_refused web "KAPELOS_RESERVE_GIB is $bad"
+done
+for bad in -1 high 6.; do
+  KAPELOS_MAX_LOAD="$bad" check "KAPELOS_MAX_LOAD=$bad is refused" up_refused web "KAPELOS_MAX_LOAD is $bad"
+done
+
+running w1 web $((4 * GIB))
+machine 1 99.00
+check "a site already running is re-applied, not admitted again" up_passes web
+
+# --- ports ---------------------------------------------------------------
+
+reset_docker
+machine 64 0.00
+running o1 other $GIB
+check "a site on the same ports as a running one is refused, naming both" up_refused web \
+  "web and other, which is running, both publish HTTP_PORT on 8080"
+reset_docker
+running p1 apart $GIB
+check "a site on its own ports starts beside a running one" up_passes web
+
+# --- moving a site's ports ------------------------------------------------
+
+reset_docker
+kapelos env moved --slot 0 >/dev/null
+sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$SCRATCH/store|" "$A/etc/sites/moved.env"
+out="$(kapelos site ports moved)"
+check "site ports moves a site to the first free block" grep -qx HTTP_PORT=8280 "$A/etc/sites/moved.env"
+check "every port with it" grep -qx DB_PORT=13506 "$A/etc/sites/moved.env"
+check "and its base URL" grep -qx MAGENTO_BASE_URL=http://moved.test:8280/ "$A/etc/sites/moved.env"
+check "and says how to move the store's own address" grep -q "kapelos magento config:set web/unsecure/base_url http://moved.test:8280/" <<<"$out"
+out="$(kapelos site ports moved --slot 1 2>&1)" && status=0 || status=$?
+check "a slot another site here holds is refused" test "$status" -ne 0
+check "naming whose it is" grep -q "slot 1 is apart's" <<<"$out"
+running m1 moved $GIB
+out="$(kapelos site ports moved --slot 5 2>&1)" && status=0 || status=$?
+check "a running site's ports don't move" test "$status" -ne 0
+check "and it says to stop it first" grep -q "moved is running, and its ports can't change under it" <<<"$out"
+check "info names the site's slot and block" grep -q "Ports        slot 2: HTTP 8280" <<<"$(KAPELOS_ENV=etc/sites/moved.env kapelos info)"
+rm "$A/etc/sites/moved.env"
+
+# --- use, down, stop-others and sites --------------------------------------
+
+reset_docker
+running w1 web $((2 * GIB))
+running o1 other $((3 * GIB))
+out="$(kapelos use apart)"
+check "use stops nothing" bash -c "! grep -q down '$STUB_DOCKER/calls'"
+check "and says what is still running" grep -q "Still running: other web. kapelos down SITE stops one." <<<"$out"
+check "and switches .env" test "$(readlink "$A/.env")" = "etc/sites/apart.env"
+
+out="$(kapelos sites)"
+check "sites shows a running site's memory and port" grep -qE '^  other +running +3.0 GiB +8080 ' <<<"$out"
+check "and the active site's marker" grep -qE '^\* apart +stopped +- +8180 ' <<<"$out"
+
+: >"$STUB_DOCKER/calls"
+kapelos down other >/dev/null
+check "down SITE stops that site" grep -q "etc/sites/other.env down" "$STUB_DOCKER/calls"
+check "and records what it used first" test "$(cat "$A/var/sites/other/footprint")" = $((3 * GIB))
+out="$(kapelos down nowhere 2>&1)" && status=0 || status=$?
+check "down with a site that doesn't exist is refused" test "$status" -ne 0
+check "and says so" grep -q "there's no site called nowhere" <<<"$out"
+
+: >"$STUB_DOCKER/calls"
+kapelos use web quiet >/dev/null
+kapelos stop-others >/dev/null
+check "stop-others stops the others" grep -q "etc/sites/other.env down" "$STUB_DOCKER/calls"
+check "and not the active site" bash -c "! grep -q 'etc/sites/web.env down' '$STUB_DOCKER/calls'"
+reset_docker
+running w1 web $GIB
+check "stop-others with nothing else running says so" grep -q "Nothing else is running." <<<"$(kapelos stop-others)"
+
+echo
+if [[ $FAILURES -eq 0 ]]; then
+  echo "all passed"
+else
+  echo "$FAILURES failed"
+  exit 1
+fi

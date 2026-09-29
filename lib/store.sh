@@ -45,7 +45,7 @@ cmd_demo() {
       "MAGENTO_BASE_URL=http://localhost:8080/" \
       "DISPOSABLE=yes"
   fi
-  require_free_to_switch demo kapelos-demo
+  require_room_to_set_up kapelos-demo
   cmd_use demo quiet
   load_env
   mkdir -p "$MAGENTO_SRC"
@@ -130,7 +130,7 @@ cmd_interactive() {
     "APP_HOST=$host" \
     "MAGENTO_BASE_URL=$url" \
     "DISPOSABLE=$([[ -n $dump ]] && echo no || echo yes)"
-  require_free_to_switch interactive "kapelos-$name"
+  require_room_to_set_up "kapelos-$name"
   cmd_use "$name" quiet
   load_env
   mkdir -p "$MAGENTO_SRC"

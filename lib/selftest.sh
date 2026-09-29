@@ -116,6 +116,11 @@ cmd_check() {
     grep -v '^ok ' <<<"$tests_out" >&2
     die "tests/ports-and-guard failed"
   }
+  echo "many sites: room for another store, ports, use, down SITE, stop-others and sites, against a stand-in docker"
+  tests_out="$(tests/many-sites 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/many-sites failed"
+  }
   echo "heavy queue: turns taken, waited for, given back and taken over, against a scratch queue"
   tests_out="$(tests/heavy-queue 2>&1)" || {
     grep -v '^ok ' <<<"$tests_out" >&2
@@ -137,7 +142,7 @@ cmd_check() {
   echo "shellcheck"
   # -a is what reaches lib/: -x alone follows a source for the names in it and reports nothing found inside.
   shellcheck -a -x bin/kapelos
-  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/stub-docker tests/heavy-queue
+  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/stub-docker tests/heavy-queue tests/many-sites
   local command
   for command in share/commands/*; do
     # The lib folder beside them holds PHP and SQL, which check-image parses instead.
