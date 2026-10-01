@@ -7,8 +7,11 @@ usage() {
 Usage: kapelos rollback REF [-y]
 
 Checks out REF, a commit, tag or branch, in the store's folder, then runs kapelos deploy,
-which turns on maintenance mode, upgrades the database, compiles, deploys the static files
-and empties every cache. It shows what it will do and asks first; -y skips the question.
+which turns on maintenance mode, installs packages without the development ones, upgrades
+the database, compiles, deploys the static files, switches the store to production mode and
+empties every cache. On a store you keep in developer mode, kapelos develop puts the
+development packages and developer mode back afterwards. It shows what it will do and asks
+first; -y skips the question.
 
   kapelos rollback v1.4.2
   kapelos rollback HEAD~1
@@ -52,14 +55,15 @@ fi
 
 echo "Now:      $(git log -1 --format='%h %s' "$here")"
 echo "Going to: $(git log -1 --format='%h %s' "$target")"
-echo "Then:     kapelos deploy, with the store in maintenance mode while it runs"
+echo "Then:     kapelos deploy: maintenance mode while it runs, no development packages, and"
+echo "          production mode after it. kapelos develop puts developer mode back."
 if [[ -z $yes ]]; then
   if [[ ! -t 0 ]]; then
     echo "kapelos rollback: nothing to ask on, so nothing done; add -y to run it without asking" >&2
     exit 1
   fi
   printf 'Roll back and deploy? [y/N] '
-  read -r answer
+  read -r answer || answer=""
   case "$answer" in
     y | Y | yes) ;;
     *) echo "nothing done"; exit 1 ;;

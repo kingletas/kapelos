@@ -25,12 +25,18 @@ pattern="${1:-}"
 [[ $# -eq 1 ]] || { echo "kapelos varnish-ban: give one PATTERN; kapelos varnish-ban -h has examples" >&2; exit 2; }
 
 # A pattern every address matches is cache-reset's job, and it empties Magento's caches too.
-case "$pattern" in
-  '' | . | '.*' | '^' | '^/' | '^.*')
-    echo "kapelos varnish-ban: '$pattern' matches every page; kapelos cache-reset empties all of it" >&2
-    exit 2
-    ;;
-esac
+# Bash's own regular expressions are close enough to Varnish's to ask whether a pattern matches
+# both the shortest address and a made-up one; a pattern bash can't read skips the question.
+matches_everything() {
+  local probe
+  for probe in / '/a/made-up/page.html?with=query'; do
+    [[ $probe =~ $1 ]] || return 1
+  done
+}
+if matches_everything "$pattern"; then
+  echo "kapelos varnish-ban: '$pattern' matches every page; kapelos cache-reset empties all of it" >&2
+  exit 2
+fi
 # varnishadm reads its own quoting, so a quote or a line break would end the pattern early.
 if [[ $pattern == *'"'* || $pattern == *$'\n'* ]]; then
   echo "kapelos varnish-ban: a pattern can't hold a double quote or a line break" >&2
