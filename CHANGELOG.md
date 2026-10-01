@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `kapelos varnish` runs `varnishadm` in the Varnish container, for a ban, the ban list or the backends.
+- `share/commands/` ships `rollback`, which checks out an earlier commit and deploys it after asking, refusing uncommitted changes and printing the way back, and `varnish-ban`, which drops the cached pages matching a pattern and keeps the rest. `kapelos check` tests both offline.
 - `kapelos env SITE --slot N` gives a site its own block of ports, every one moved up by a hundred per slot, so stores from two Kapelos folders can run on one machine without fighting over 8080. Slot 1 is 8180 (and 8181 to 8184 for scaled web servers), 8543, 13406, 8125, 9300, 15772 and 35829. The site's `MAGENTO_BASE_URL` carries its own port. Slot 0, or no `--slot`, writes exactly the ports it always did. A slot whose ports would pass 65535 or land on another slot's is refused.
 - `kapelos env SITE` refuses a name another Kapelos folder already uses on the same Docker. Docker names containers and volumes `kapelos-SITE` machine-wide, so the second folder's site would have shared the first one's containers and database.
 - `KAPELOS_MAX_RUNNING` and `KAPELOS_MEM_BUDGET_GIB` set a limit across every Kapelos folder on one Docker: how many stores may run, and how many GiB their memory limits may add up to. `kapelos up` refuses a store that would pass either, and says what is running, from where, and the numbers. Both are off unless set, and then nothing changes: `up` still refuses a second running site from its own folder, as before.

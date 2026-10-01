@@ -223,6 +223,12 @@ cmd_valkey() {
   esac
 }
 
+# varnishadm in the Varnish container: a ban, the ban list, the backends.
+cmd_varnish() {
+  [[ $# -gt 0 ]] || die "say what varnishadm should do: kapelos varnish ban.list, kapelos varnish backend.list"
+  compose_exec varnish varnishadm "$@"
+}
+
 # Cache files written under other settings can stop bin/magento from starting at all, so they go first.
 clear_cache_files() {
   step "Removing Magento's cache files in var/cache and var/page_cache"
