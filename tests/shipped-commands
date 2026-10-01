@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# The shipped commands rollback and varnish-ban, against a stand-in kapelos that records what it
+# was asked to do. Offline: nothing starts a container, and the store is a throwaway git repository.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# kapelos as the commands see it: every call is one line in $CALLS.
+export CALLS="$SCRATCH/calls"
+cat >"$SCRATCH/kapelos" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$CALLS"
+STUB
+chmod +x "$SCRATCH/kapelos"
+export KAPELOS="$SCRATCH/kapelos"
+
+# A store with two commits, the first tagged.
+export MAGENTO_SRC="$SCRATCH/store"
+git init -q "$MAGENTO_SRC"
+git -C "$MAGENTO_SRC" -c user.name=Test -c user.email=test@example.test commit -q --allow-empty -m "first release"
+git -C "$MAGENTO_SRC" tag v1
+git -C "$MAGENTO_SRC" -c user.name=Test -c user.email=test@example.test commit -q --allow-empty -m "second release"
+second="$(git -C "$MAGENTO_SRC" rev-parse HEAD)"
+
+run() {
+  : >"$CALLS"
+  local status=0
+  "$@" >"$SCRATCH/out" 2>&1 || status=$?
+  return "$status"
+}
+
+ROLLBACK="$ROOT/share/commands/rollback"
+BAN="$ROOT/share/commands/varnish-ban"
+
+# -- rollback ------------------------------------------------------------------------------
+status=0; run "$ROLLBACK" v1 </dev/null || status=$?
+if [[ $status -eq 1 && ! -s $CALLS && $(git -C "$MAGENTO_SRC" rev-parse HEAD) == "$second" ]]; then result 0 "rollback with nothing to ask on and no -y does nothing"; else result 1 "rollback with nothing to ask on and no -y does nothing"; fi
+
+status=0; printf 'n\n' | script -qec "$ROLLBACK v1" /dev/null >"$SCRATCH/out" 2>&1 || status=$?
+if grep -q 'Roll back and deploy?' "$SCRATCH/out" && [[ ! -s $CALLS && $(git -C "$MAGENTO_SRC" rev-parse HEAD) == "$second" ]]; then result 0 "rollback asks first, and a no leaves the code and the store alone"; else result 1 "rollback asks first, and a no leaves the code and the store alone"; fi
+
+: >"$CALLS"
+printf 'y\n' | script -qec "$ROLLBACK v1" /dev/null >"$SCRATCH/out" 2>&1
+if [[ $(git -C "$MAGENTO_SRC" rev-parse HEAD) == "$(git -C "$MAGENTO_SRC" rev-parse v1)" && $(cat "$CALLS") == deploy ]]; then result 0 "a yes checks out the ref, then deploys"; else result 1 "a yes checks out the ref, then deploys"; fi
+if grep -q "The way back: kapelos rollback ${second:0:7}" "$SCRATCH/out"; then result 0 "and prints the commit it came from, as the way back"; else result 1 "and prints the commit it came from, as the way back"; fi
+if [[ -z "$(git -C "$MAGENTO_SRC" symbolic-ref -q HEAD || true)" ]]; then result 0 "the checkout is detached, so no branch moved"; else result 1 "the checkout is detached, so no branch moved"; fi
+
+run "$ROLLBACK" "$second" -y
+if [[ $(git -C "$MAGENTO_SRC" rev-parse HEAD) == "$second" && $(cat "$CALLS") == deploy ]]; then result 0 "-y runs without asking, and the way back works"; else result 1 "-y runs without asking, and the way back works"; fi
+
+status=0; run "$ROLLBACK" "$second" -y || status=$?
+if [[ $status -eq 0 && ! -s $CALLS ]] && grep -q 'already at' "$SCRATCH/out"; then result 0 "rolling back to where the store already is deploys nothing"; else result 1 "rolling back to where the store already is deploys nothing"; fi
+
+echo "edited" >"$MAGENTO_SRC/tracked.txt"
+git -C "$MAGENTO_SRC" add tracked.txt
+status=0; run "$ROLLBACK" v1 -y || status=$?
+if [[ $status -eq 1 && ! -s $CALLS && $(git -C "$MAGENTO_SRC" rev-parse HEAD) == "$second" ]]; then result 0 "uncommitted changes are refused, so nothing is lost"; else result 1 "uncommitted changes are refused, so nothing is lost"; fi
+git -C "$MAGENTO_SRC" reset -q
+
+status=0; run "$ROLLBACK" no-such-ref -y || status=$?
+if [[ $status -eq 1 && ! -s $CALLS ]]; then result 0 "a ref that doesn't exist is refused"; else result 1 "a ref that doesn't exist is refused"; fi
+
+status=0; run "$ROLLBACK" || status=$?
+if [[ $status -eq 2 ]]; then result 0 "no ref is a usage error"; else result 1 "no ref is a usage error"; fi
+
+# -- varnish-ban -------------------------------------------------------------------------------
+run "$BAN" '^/checkout'
+if [[ $(cat "$CALLS") == 'varnish ban req.url ~ ^/checkout' ]]; then result 0 "varnish-ban asks Varnish to ban the one pattern"; else result 1 "varnish-ban asks Varnish to ban the one pattern"; fi
+
+for pattern in '' . '.*' '^' '^/' 'a"b'; do
+  status=0; run "$BAN" "$pattern" || status=$?
+  if [[ $status -eq 2 && ! -s $CALLS ]]; then result 0 "varnish-ban refuses '$pattern'"; else result 1 "varnish-ban refuses '$pattern'"; fi
+done
+
+status=0; run "$BAN" || status=$?
+if [[ $status -eq 2 && ! -s $CALLS ]]; then result 0 "varnish-ban with no pattern is a usage error"; else result 1 "varnish-ban with no pattern is a usage error"; fi
+
+for command in "$ROLLBACK" "$BAN"; do
+  if "$command" -h | grep -q '^Usage: kapelos'; then result 0 "$(basename "$command") -h prints its usage"; else result 1 "$(basename "$command") -h prints its usage"; fi
+done
+
+if [[ $FAILURES -gt 0 ]]; then
+  echo "$FAILURES failed" >&2
+  exit 1
+fi

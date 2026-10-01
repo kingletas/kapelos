@@ -604,8 +604,10 @@ It brings each command's `lib/` files with it and takes them away again once not
 | `indexers` | Every indexer's mode and state, and how many changed rows are waiting in its changelog |
 | `big-tables` | The largest tables in the database, and which of them are only logs |
 | `queue-depth` | How many messages are sitting in each RabbitMQ queue |
+| `rollback` | Checks out an earlier commit in the store's folder and runs `kapelos deploy`, after showing both commits and asking; it refuses uncommitted changes and prints the commit that takes you back |
+| `varnish-ban` | Bans the cached pages whose address matches a pattern, `kapelos varnish-ban '^/checkout'`, and leaves every other page cached |
 
-`orders` and `seed-grid` write to the store, so both refuse to run unless the site is `DISPOSABLE=yes`. `mail` and `queue-depth` read a JSON API, so both need `jq`.
+`orders` and `seed-grid` write to the store, so both refuse to run unless the site is `DISPOSABLE=yes`. `rollback` puts the code back, not the database: take a `kapelos snapshot` before a deploy you may want to undo. `mail` and `queue-depth` read a JSON API, so both need `jq`.
 
 They're meant to be changed. Read one, take the half you need, and make it yours: from then on `kapelos commands` reports it as `changed` and leaves it alone.
 

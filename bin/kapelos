@@ -115,6 +115,7 @@ Working in the store
   snapshot [save|restore|delete] [NAME] [-y]
                          Save the database, search index and queue, and put them back in seconds
   valkey [cache|session] valkey-cli on the cache or the session instance
+  varnish ARGS...        varnishadm in the Varnish container: kapelos varnish ban.list
   cache-reset            Empty every cache: Magento, Valkey and Varnish. Sessions are kept
   cron [on|off|run]      Magento's scheduled jobs and queue consumers; off unless you turn them on
   queues                 Declare the store's queues in RabbitMQ without setup:upgrade, and check each is there
@@ -208,6 +209,7 @@ main() {
     up) cmd_up ;;
     use) cmd_use "$@" ;;
     valkey) cmd_valkey "$@" ;;
+    varnish) cmd_varnish "$@" ;;
     *:*) run_magento_command "$command" "$@" ;;
     *)
       local file

@@ -117,6 +117,12 @@ cmd_check() {
     die "tests/ports-and-guard failed"
   }
 
+  echo "shipped commands: rollback and varnish-ban, against a stand-in kapelos and a throwaway git repository"
+  tests_out="$(tests/shipped-commands 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/shipped-commands failed"
+  }
+
   echo "kapelos: runs under bash 3.2, the version macOS ships"
   docker run --rm -v "$KAPELOS_HOME:/kapelos:ro" -w /kapelos bash:3.2 bash -c '
     set -e
@@ -132,7 +138,7 @@ cmd_check() {
   echo "shellcheck"
   # -a is what reaches lib/: -x alone follows a source for the names in it and reports nothing found inside.
   shellcheck -a -x bin/kapelos
-  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/stub-docker
+  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/stub-docker
   local command
   for command in share/commands/*; do
     # The lib folder beside them holds PHP and SQL, which check-image parses instead.
