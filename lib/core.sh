@@ -13,7 +13,7 @@ step() {
 
 # Whether what is piped in has a matching line: takes grep's options and pattern, as in
 # `compose ps --services | holds -qx db`. It reads everything before it answers. A plain
-# `| holds -q` stops reading at the first match, the writer then meets a closed pipe and fails,
+# `| grep -q` stops reading at the first match, the writer then meets a closed pipe and fails,
 # and under pipefail the whole test reads as false, whichever way the answer was.
 holds() {
   local text
