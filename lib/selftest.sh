@@ -54,7 +54,7 @@ cmd_check() {
     die "an untrusted .kapelos/compose.yaml was used"
   fi
   cmd_trust "$scratch/store" >/dev/null
-  (ENV_FILE="$scratch/env-project" && compose config --services) | grep -qx kapelos-check-extra ||
+  (ENV_FILE="$scratch/env-project" && compose config --services) | holds -qx kapelos-check-extra ||
     die "a trusted .kapelos/compose.yaml wasn't used"
   printf '    command: ["true"]\n' >>"$scratch/store/.kapelos/compose.yaml"
   if (ENV_FILE="$scratch/env-project" && compose config --services) >/dev/null 2>&1; then
@@ -123,6 +123,12 @@ cmd_check() {
     die "tests/shipped-commands failed"
   }
 
+  echo "check-image's module lists: read whole, so a match early in a slow list can't be lost to a closed pipe"
+  tests_out="$(tests/php-module-check 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/php-module-check failed"
+  }
+
   echo "kapelos: runs under bash 3.2, the version macOS ships"
   docker run --rm -v "$KAPELOS_HOME:/kapelos:ro" -w /kapelos bash:3.2 bash -c '
     set -e
@@ -138,7 +144,7 @@ cmd_check() {
   echo "shellcheck"
   # -a is what reaches lib/: -x alone follows a source for the names in it and reports nothing found inside.
   shellcheck -a -x bin/kapelos
-  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/stub-docker
+  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker
   local command
   for command in share/commands/*; do
     # The lib folder beside them holds PHP and SQL, which check-image parses instead.
@@ -252,12 +258,17 @@ cmd_check_image() {
     fi
   done
 
-  if docker run --rm kapelos-php:check php -m | grep -qix xdebug; then
+  # Each list is taken whole before it is searched: piped into grep -q, a match ends the read,
+  # docker fails writing the rest, and under pipefail the answer comes out wrong either way.
+  local compiling encoded
+  compiling="$(docker run --rm kapelos-php:check php -m)"
+  if grep -qix xdebug <<<"$compiling"; then
     echo "Xdebug loads without its scan directory, so compiling would load it too" >&2
     missing=1
   fi
 
-  if ! docker run --rm kapelos-php:check-sourceguardian php -m | grep -qix sourceguardian; then
+  encoded="$(docker run --rm kapelos-php:check-sourceguardian php -m)"
+  if ! grep -qix sourceguardian <<<"$encoded"; then
     echo "missing extension: SourceGuardian, in the image built with INSTALL_SOURCEGUARDIAN=true" >&2
     missing=1
   fi
@@ -307,13 +318,13 @@ status_is() {
 has_header() {
   local header="$1"
   shift
-  curl -s -o /dev/null -D - "$@" | grep -qi "^$header"
+  curl -s -o /dev/null -D - "$@" | holds -qi "^$header"
 }
 
 mail_arrives() {
   exec_quiet php php -r 'exit(mail("someone@example.test", "kapelos self-test", "hello") ? 0 : 1);' &&
     sleep 1 &&
-    curl -s "http://127.0.0.1:${MAIL_UI_PORT:-8025}/api/v1/messages" | grep -q 'kapelos self-test'
+    curl -s "http://127.0.0.1:${MAIL_UI_PORT:-8025}/api/v1/messages" | holds -q 'kapelos self-test'
 }
 
 xdebug_off_in_php() {
@@ -519,7 +530,7 @@ audit_passes_beyond_dependencies() {
   local out
   out="$(cmd_site audit 2>&1 || true)"
   [[ $out == *"Security headers Magento sends"* ]] || return 1
-  ! printf '%s\n' "$out" | sed -n '/^Credentials, checked/,$p' | grep -q '^  FAIL '
+  ! printf '%s\n' "$out" | sed -n '/^Credentials, checked/,$p' | holds -q '^  FAIL '
 }
 
 kingletas_modules_install() {

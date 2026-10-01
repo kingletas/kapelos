@@ -202,7 +202,7 @@ cmd_stores() {
     return
   fi
   local pair code address known="" missing=""
-  if compose ps --status running --services 2>/dev/null | grep -qx db && installed; then
+  if compose ps --status running --services 2>/dev/null | holds -qx db && installed; then
     known="$(store_codes)"
   fi
   for pair in $(store_urls); do

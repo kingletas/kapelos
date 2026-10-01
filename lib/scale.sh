@@ -475,7 +475,7 @@ magento_on_every_server() {
 
 scale_status() {
   local n host running=no
-  running_projects | grep -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && running=yes
+  running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && running=yes
   if ! scaled; then
     echo "One web server and no replica, the ordinary shape. kapelos scale web=2 replica=1 adds a server and a replica."
     return
