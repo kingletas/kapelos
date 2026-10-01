@@ -11,6 +11,16 @@ step() {
   echo "==> $*"
 }
 
+# Whether what is piped in has a matching line: takes grep's options and pattern, as in
+# `compose ps --services | holds -qx db`. It reads everything before it answers. A plain
+# `| grep -q` stops reading at the first match, the writer then meets a closed pipe and fails,
+# and under pipefail the whole test reads as false, whichever way the answer was.
+holds() {
+  local text
+  text="$(cat)"
+  grep "$@" <<<"$text"
+}
+
 require_tools() {
   local tool
   for tool in "$@"; do
@@ -369,7 +379,7 @@ autoload_is_stale() {
 # compile, and saying so is the difference between a fix and a half fix.
 autoload_repair() {
   autoload_is_stale || return 0
-  compose ps --status running --services 2>/dev/null | grep -qx php || return 0
+  compose ps --status running --services 2>/dev/null | holds -qx php || return 0
 
   step "The class map names generated classes that are gone. Rebuilding it plain"
   exec_php composer dump-autoload --no-interaction >/dev/null || return 0
@@ -412,7 +422,7 @@ autoload_is_optimised() {
 # directories it is deleting, and the command stops on "Directory not empty".
 clear_generated_for_module_change() {
   autoload_is_optimised || return 0
-  compose ps --status running --services 2>/dev/null | grep -qx php || return 0
+  compose ps --status running --services 2>/dev/null | holds -qx php || return 0
 
   step "This command clears generated code, so clearing it first and rebuilding the class map plain"
   exec_php sh -c 'rm -rf generated/code generated/metadata' || true
@@ -489,5 +499,5 @@ disposable() {
 }
 
 require_site_running() {
-  running_projects | grep -qx "${COMPOSE_PROJECT_NAME:-kapelos}" || die "the site isn't running. Start it with: kapelos up"
+  running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}" || die "the site isn't running. Start it with: kapelos up"
 }

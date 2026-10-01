@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- `kapelos check-image` no longer reports SourceGuardian missing when it is there, and catches Xdebug loading where compiling would see it however early `php -m` lists it. Each module list is read whole before it is searched: piped into `grep -q`, a match ended the read, `docker run` failed writing the rest, and under `pipefail` the answer came out wrong. Every other pipe into `grep -q` reads its input whole the same way, through `holds`.
 - `kapelos varnish` runs `varnishadm` in the Varnish container, for a ban, the ban list or the backends.
 - `share/commands/` ships `rollback`, which checks out an earlier commit and deploys it after asking, refusing uncommitted changes and printing the way back, and `varnish-ban`, which drops the cached pages matching a pattern and keeps the rest. `kapelos check` tests both offline.
 - `kapelos env SITE --slot N` gives a site its own block of ports, every one moved up by a hundred per slot, so stores from two Kapelos folders can run on one machine without fighting over 8080. Slot 1 is 8180 (and 8181 to 8184 for scaled web servers), 8543, 13406, 8125, 9300, 15772 and 35829. The site's `MAGENTO_BASE_URL` carries its own port. Slot 0, or no `--slot`, writes exactly the ports it always did. A slot whose ports would pass 65535 or land on another slot's is refused.

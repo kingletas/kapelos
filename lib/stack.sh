@@ -255,7 +255,7 @@ cmd_cron() {
   case "$action" in
     status)
       [[ ${CRON:-no} == yes ]] && echo "Cron is on for this site." || echo "Cron is off for this site."
-      if compose ps --status running --services 2>/dev/null | grep -qx db && installed; then
+      if compose ps --status running --services 2>/dev/null | holds -qx db && installed; then
         db_root -t "${DB_NAME:-magento}" -e "SELECT status, COUNT(*) AS jobs, MAX(executed_at) AS last_run FROM \`$(table_prefix)cron_schedule\` WHERE scheduled_at > NOW() - INTERVAL 1 HOUR GROUP BY status" </dev/null
       fi
       ;;
@@ -399,9 +399,9 @@ cmd_info() {
   load_env
   local bind="${BIND_ADDRESS:-127.0.0.1}" state=stopped cert="Traefik's own self-signed certificate, until kapelos cert"
   local site="${COMPOSE_PROJECT_NAME:-kapelos}"
-  running_projects | grep -qx "$site" && state=running
+  running_projects | holds -qx "$site" && state=running
   if [[ -f etc/tls/cert.pem ]] && command -v openssl >/dev/null &&
-    openssl x509 -in etc/tls/cert.pem -noout -text 2>/dev/null | grep -qE "DNS:${APP_HOST:-magento.test}(,|\$)"; then
+    openssl x509 -in etc/tls/cert.pem -noout -text 2>/dev/null | holds -qE "DNS:${APP_HOST:-magento.test}(,|\$)"; then
     cert="trusted, from kapelos cert"
   fi
 
