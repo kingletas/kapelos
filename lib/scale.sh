@@ -383,6 +383,7 @@ scale_replica_state() {
   fi
   io="$(sed -n 's/^ *Slave_IO_Running: //p' <<<"$status")"
   sql="$(sed -n 's/^ *Slave_SQL_Running: //p' <<<"$status")"
+  # The first error, kept in bash: a pipe into head would close on sed, and stop this under set -e.
   error="$(sed -n -e 's/^ *Last_IO_Error: \(..*\)/\1/p' -e 's/^ *Last_SQL_Error: \(..*\)/\1/p' <<<"$status")"
   error="${error%%$'\n'*}"
   if [[ $io == Yes && $sql == Yes ]]; then
