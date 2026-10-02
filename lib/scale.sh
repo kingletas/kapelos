@@ -383,7 +383,8 @@ scale_replica_state() {
   fi
   io="$(sed -n 's/^ *Slave_IO_Running: //p' <<<"$status")"
   sql="$(sed -n 's/^ *Slave_SQL_Running: //p' <<<"$status")"
-  error="$(sed -n -e 's/^ *Last_IO_Error: \(..*\)/\1/p' -e 's/^ *Last_SQL_Error: \(..*\)/\1/p' <<<"$status" | head -n 1)"
+  error="$(sed -n -e 's/^ *Last_IO_Error: \(..*\)/\1/p' -e 's/^ *Last_SQL_Error: \(..*\)/\1/p' <<<"$status")"
+  error="${error%%$'\n'*}"
   if [[ $io == Yes && $sql == Yes ]]; then
     echo "running, $(sed -n 's/^ *Seconds_Behind_Master: //p' <<<"$status") seconds behind"
     return

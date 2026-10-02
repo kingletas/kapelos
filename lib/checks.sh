@@ -150,7 +150,9 @@ audit_settings() {
   running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && installed 2>/dev/null && db_up=1
   while IFS=$'\t' read -r kind subject condition severity why; do
     if [[ $kind == module ]]; then
-      value="$(sed -n "s/.*'$subject' => \([01]\).*/\1/p" "$config" 2>/dev/null | head -n 1)"
+      # The first match, kept in bash: a pipe into head would close on sed, and stop the check under set -e.
+      value="$(sed -n "s/.*'$subject' => \([01]\).*/\1/p" "$config" 2>/dev/null)"
+      value="${value%%$'\n'*}"
       [[ -n $value ]] || continue
       if audit_value_fails "$value" "$condition"; then
         report_line "$severity" "$subject is off: $why"
