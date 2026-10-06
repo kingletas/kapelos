@@ -153,15 +153,32 @@ stub_info() {
   cat "$STUB_DOCKER/data-root"
 }
 
-# docker run --rm -v NAME:/from:ro alpine du -sk /from: the volume's line in volume-kib, as du prints it.
-# docker run --rm -v FROM:/from:ro -v TO:/to alpine sh -c ...: one volume copied into another, which calls records.
+# docker run LIMITS -v NAME:/from:ro alpine du -sk /from: the volume's line in volume-kib, as du prints it.
+# docker run LIMITS -v FROM:/from:ro -v TO:/to alpine sh -c ...: one volume copied into another, which calls records.
+# docker run LIMITS alpine true: the helper that does nothing, started to learn whether Docker takes the limits.
+# LIMITS is what every helper container runs under, and a run without them is refused: --rm --network none
+# --memory M --cpus N, then --cgroup-parent NAME when the machine names one. With STUB_RUN_REFUSED set, every
+# run fails with those words, as Docker does for a limit it won't take.
 stub_run() {
   local name kib want
-  if [[ ${1:-} == --rm && ${2:-} == -v && ${3:-} == *:/from:ro && ${4:-} == -v && ${5:-} == *:/to && ${6:-} == alpine && ${7:-} == sh ]]; then
+  [[ ${1:-} == --rm && ${2:-} == --network && ${3:-} == none && ${4:-} == --memory && ${6:-} == --cpus ]] ||
+    unexpected run "$@"
+  shift 7
+  if [[ ${1:-} == --cgroup-parent ]]; then
+    shift 2
+  fi
+  if [[ -n ${STUB_RUN_REFUSED:-} ]]; then
+    echo "docker: Error response from daemon: $STUB_RUN_REFUSED" >&2
+    exit 125
+  fi
+  if [[ ${1:-} == alpine && ${2:-} == true && $# -eq 2 ]]; then
     return 0
   fi
-  [[ ${1:-} == --rm && ${2:-} == -v && ${4:-} == alpine && ${5:-} == du ]] || unexpected run "$@"
-  want="${3%%:*}"
+  if [[ ${1:-} == -v && ${2:-} == *:/from:ro && ${3:-} == -v && ${4:-} == *:/to && ${5:-} == alpine && ${6:-} == sh ]]; then
+    return 0
+  fi
+  [[ ${1:-} == -v && ${3:-} == alpine && ${4:-} == du ]] || unexpected run "$@"
+  want="${2%%:*}"
   while IFS='|' read -r name kib; do
     if [[ $name == "$want" ]]; then
       printf '%s\t/from\n' "$kib"

@@ -51,6 +51,11 @@ GIB_BYTES=1073741824
 # What must stay free where Docker keeps its data before a store starts or a snapshot is taken, in GiB.
 # It is the figure kapelos doctor warns under. 0 is off.
 DEFAULT_DISK_RESERVE_GIB=20
+# The small containers kapelos starts by itself, to measure a volume or to copy one, are not Compose services,
+# so no compose file's limits reach them. Each runs off the network and under these two limits, and
+# KAPELOS_HELPER_CGROUP_PARENT puts it in a cgroup of the machine's own, as cgroup_parent does a service.
+DEFAULT_HELPER_MEMORY=512m
+DEFAULT_HELPER_CPUS=1
 
 # Memory this machine can still hand out, in bytes. Linux says so directly. On macOS free, inactive and
 # speculative pages can all be handed out; that path was written without a Mac to try it on.
@@ -192,9 +197,42 @@ require_disk_room_to_start() {
 kapelos snapshot lists this site's snapshots, and docker system df shows what else is there"
 }
 
+# Refuses a limit Docker would not take, by the name of its setting, before any helper container is started.
+require_helper_limits() {
+  local memory="${KAPELOS_HELPER_MEMORY:-$DEFAULT_HELPER_MEMORY}" cpus="${KAPELOS_HELPER_CPUS:-$DEFAULT_HELPER_CPUS}"
+  local parent="${KAPELOS_HELPER_CGROUP_PARENT:-}"
+  [[ $memory =~ ^[1-9][0-9]{0,5}[mg]$ ]] ||
+    die "KAPELOS_HELPER_MEMORY is $memory, and it takes a memory limit the way Docker writes one, such as 512m or 2g"
+  [[ $cpus =~ ^[0-9]{1,3}(\.[0-9]{1,2})?$ && ! $cpus =~ ^0+(\.0+)?$ ]] ||
+    die "KAPELOS_HELPER_CPUS is $cpus, and it takes a number of CPUs above 0, such as 1 or 0.5"
+  [[ $parent =~ ^[A-Za-z0-9_./:-]*$ ]] ||
+    die "KAPELOS_HELPER_CGROUP_PARENT is $parent, and it takes a cgroup's name, such as work.slice"
+}
+
+# docker run for one of the containers kapelos starts by itself: removed when it ends, off the network, capped.
+helper_run() {
+  local limits
+  require_helper_limits
+  limits=(--rm --network none --memory "${KAPELOS_HELPER_MEMORY:-$DEFAULT_HELPER_MEMORY}"
+    --cpus "${KAPELOS_HELPER_CPUS:-$DEFAULT_HELPER_CPUS}")
+  [[ -z ${KAPELOS_HELPER_CGROUP_PARENT:-} ]] || limits+=(--cgroup-parent "$KAPELOS_HELPER_CGROUP_PARENT")
+  docker run "${limits[@]}" "$@"
+}
+
+# Starts one helper container that does nothing, before anything is stopped or copied: a limit of the right
+# shape can still be one Docker refuses, a memory limit under its minimum for one, and finding that out after
+# a store's database was stopped would leave it stopped.
+require_helper_starts() {
+  local said
+  require_helper_limits
+  said="$(helper_run alpine true 2>&1)" ||
+    die "Docker wouldn't start the small container that measures and copies volumes, so nothing was stopped or copied. It runs under KAPELOS_HELPER_MEMORY, KAPELOS_HELPER_CPUS and KAPELOS_HELPER_CGROUP_PARENT, and Docker said:
+$said"
+}
+
 # The bytes a volume holds, measured the way a snapshot copies it.
 volume_bytes() {
-  docker run --rm -v "$1:/from:ro" alpine du -sk /from 2>/dev/null | awk '{ printf "%.0f\n", $1 * 1024; found = 1 } END { exit !found }'
+  helper_run -v "$1:/from:ro" alpine du -sk /from 2>/dev/null | awk '{ printf "%.0f\n", $1 * 1024; found = 1 } END { exit !found }'
 }
 
 # A snapshot is a second copy of the database, the search index and the queue, so it is refused when that copy
@@ -211,6 +249,8 @@ require_disk_room_for_copy() {
   [[ $reserve -gt 0 ]] || return 0
   root="$(docker_data_dir)" || return 0
   free="$(free_bytes_in "$root")" || return 0
+  # Asked here, where a refusal can end the command: the measuring below runs where only its answer is read.
+  require_helper_limits
   for volume in $SNAPSHOT_VOLUMES; do
     if ! bytes="$(volume_bytes "$prefix$volume")"; then
       echo "kapelos: can't measure $volume, so the disk reserve isn't checked for $short" >&2
@@ -402,7 +442,7 @@ valid_snapshot_name() {
 
 # Copies one volume into another, emptying the destination first.
 copy_volume() {
-  docker run --rm -v "$1:/from:ro" -v "$2:/to" alpine sh -c 'find /to -mindepth 1 -delete && cp -a /from/. /to/'
+  helper_run -v "$1:/from:ro" -v "$2:/to" alpine sh -c 'find /to -mindepth 1 -delete && cp -a /from/. /to/'
 }
 
 cmd_snapshot() {
@@ -450,6 +490,7 @@ cmd_snapshot() {
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot save NAME"
       valid_snapshot_name "$name"
       [[ -z $(snapshot_names | grep -x "$name" || true) ]] || die "there's already a snapshot called $name. kapelos snapshot delete $name removes it"
+      require_helper_starts
       require_disk_room_for_snapshot
       step "Pausing the database, search and queue so the copy is consistent"
       compose stop db opensearch rabbitmq
@@ -472,6 +513,7 @@ cmd_snapshot() {
       fi
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot restore NAME, or --latest for the newest. kapelos snapshot lists them"
       [[ -n $(snapshot_names | grep -x "$name" || true) ]] || die "there's no snapshot called $name. kapelos snapshot lists them"
+      require_helper_starts
       confirm "Replace this site's database, search index and queue with the snapshot $name? What's there now is lost unless you save it first." "$yes" || exit 1
       step "Stopping the database, search and queue"
       compose stop db opensearch rabbitmq

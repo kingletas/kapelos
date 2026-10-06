@@ -18,6 +18,7 @@ export STUB_DOCKER="$SCRATCH/docker"
 export KAPELOS_MEMINFO="$SCRATCH/meminfo" KAPELOS_LOADAVG="$SCRATCH/loadavg"
 export LOG="$SCRATCH/log"
 unset KAPELOS_RESERVE_GIB KAPELOS_MAX_LOAD KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB KAPELOS_DISK_RESERVE_GIB KAPELOS_ENV
+unset KAPELOS_HELPER_MEMORY KAPELOS_HELPER_CPUS KAPELOS_HELPER_CGROUP_PARENT
 
 result() {
   if [[ $1 -eq 0 ]]; then
@@ -314,6 +315,41 @@ check "the active site is still the one it was" test ! -L "$A/.env"
 run_on shop cmd_site copy shop shop-old --snapshot clean >/dev/null 2>&1
 check "--snapshot picks the one to copy" grep -q -- "-v kapelos-shop_snapshot-clean-db-data:/from:ro -v kapelos-shop-old_db-data:/to" "$STUB_DOCKER/calls"
 check "a second copy gets the next block of ports" test "$(value "$A/etc/sites/shop-old.env" HTTP_PORT)" = 8280
+check "a container kapelos starts by itself is off the network and capped" \
+  grep -q -- "^run --rm --network none --memory 512m --cpus 1 -v kapelos-shop_snapshot-clean-db-data:/from:ro" "$STUB_DOCKER/calls"
+check "every one of them" test "$(grep -c '^run ' "$STUB_DOCKER/calls")" = "$(grep -c '^run --rm --network none --memory 512m --cpus 1 ' "$STUB_DOCKER/calls")"
+check "one that does nothing is started first, to learn whether Docker takes the limits" \
+  test "$(grep -n '^run ' "$STUB_DOCKER/calls" | head -n 1 | cut -d: -f2-)" = "run --rm --network none --memory 512m --cpus 1 alpine true"
+
+: >"$STUB_DOCKER/calls"
+KAPELOS_HELPER_MEMORY=1g KAPELOS_HELPER_CPUS=0.5 KAPELOS_HELPER_CGROUP_PARENT=work.slice \
+  run_on shop cmd_site copy shop shop-capped --snapshot clean >/dev/null 2>&1
+check "the machine's own limits and cgroup reach them" \
+  grep -q -- "^run --rm --network none --memory 1g --cpus 0.5 --cgroup-parent work.slice -v kapelos-shop_snapshot-clean-db-data:/from:ro -v kapelos-shop-capped_db-data:/to" "$STUB_DOCKER/calls"
+check "a memory limit Docker would not take is refused by its setting's name" refused "KAPELOS_HELPER_MEMORY is lots" \
+  env KAPELOS_HELPER_MEMORY=lots KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_site copy shop new
+check "no CPUs at all is refused" refused "KAPELOS_HELPER_CPUS is 0, and it takes a number of CPUs above 0" \
+  env KAPELOS_HELPER_CPUS=0 KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_site copy shop new
+check "a cgroup name that is not one is refused" refused "KAPELOS_HELPER_CGROUP_PARENT is a slice; rm" \
+  env "KAPELOS_HELPER_CGROUP_PARENT=a slice; rm" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_site copy shop new
+check "and a refused copy wrote nothing" test ! -e "$A/etc/sites/new.env" -a ! -e "$A/var/stores/new"
+: >"$STUB_DOCKER/calls"
+check "a limit of the right shape that Docker refuses stops the copy with Docker's words" refused "Minimum memory limit allowed is 6MB" \
+  env KAPELOS_HELPER_MEMORY=4m "STUB_RUN_REFUSED=Minimum memory limit allowed is 6MB" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_site copy shop new
+check "and names the settings it runs under" refused "KAPELOS_HELPER_MEMORY, KAPELOS_HELPER_CPUS and KAPELOS_HELPER_CGROUP_PARENT" \
+  env KAPELOS_HELPER_MEMORY=4m "STUB_RUN_REFUSED=Minimum memory limit allowed is 6MB" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_site copy shop new
+check "having written nothing for the copy" test ! -e "$A/etc/sites/new.env" -a ! -e "$A/var/stores/new"
+check "a snapshot Docker would refuse to copy is refused too" refused "Docker wouldn't start the small container" \
+  env KAPELOS_HELPER_CPUS=999 "STUB_RUN_REFUSED=range of CPUs is from 0.01 to 8.00" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_snapshot save capped-check
+check "with nothing stopped and no snapshot volume made" lacks " stop db opensearch rabbitmq\|^volume create" "$STUB_DOCKER/calls"
+check "and a restore the same" refused "Docker wouldn't start the small container" \
+  env "STUB_RUN_REFUSED=cgroup parent refused" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_snapshot restore clean -y
+check "before its database is stopped" lacks " stop db opensearch rabbitmq" "$STUB_DOCKER/calls"
+
+: >"$STUB_DOCKER/calls"
+check "a snapshot is refused the same way" refused "KAPELOS_HELPER_MEMORY is lots" \
+  env KAPELOS_HELPER_MEMORY=lots KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_snapshot save capped-check
+check "before anything is stopped" lacks " stop db opensearch rabbitmq" "$STUB_DOCKER/calls"
 
 : >"$LOG"
 STUB_MAGENTO_FAILS=setup:db:status run_on shop cmd_site copy shop shop-behind >/dev/null 2>&1
