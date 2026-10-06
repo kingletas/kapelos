@@ -26,24 +26,26 @@ magento_seed_profiles() {
     LC_ALL=C sort -u
 }
 
-# Prints where the generator finds a profile, as a path from the store's root. One of Kapelos's is copied into
-# the store first, since the generator runs in the container; one of Magento's is read where Magento keeps it.
-seed_profile_path() {
-  local name="$1" file="$KAPELOS_HOME/share/seed/$1.xml" edition
-  if [[ -f $file ]]; then
-    grep -qF "<di>../../$SEED_MAIL_STAND_INS</di>" "$file" ||
-      die "share/seed/$name.xml doesn't name the generator's stand-ins for mail, so its mail would go out through the store's own transport. It needs this line in its profile: <di>../../$SEED_MAIL_STAND_INS</di>"
-    exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$name" <"$file"
-    printf '%s/%s.xml' "$SEED_PROFILE_DIR" "$name"
-    return 0
-  fi
+# Whether a profile is one Kapelos ships.
+seed_profile_is_ours() {
+  [[ -f $KAPELOS_HOME/share/seed/$1.xml ]]
+}
+
+# Prints where Magento keeps a profile of its own in this store, as a path from the store's root.
+magento_seed_profile_path() {
+  local edition
   for edition in ee ce; do
-    if exec_quiet php test -f "setup/performance-toolkit/profiles/$edition/$name.xml" </dev/null; then
-      printf 'setup/performance-toolkit/profiles/%s/%s.xml' "$edition" "$name"
+    if exec_quiet php test -f "setup/performance-toolkit/profiles/$edition/$1.xml" </dev/null; then
+      printf 'setup/performance-toolkit/profiles/%s/%s.xml' "$edition" "$1"
       return 0
     fi
   done
   return 1
+}
+
+# Copies a profile Kapelos ships into the store, since the generator runs in the container.
+seed_profile_put() {
+  exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$1" <"$KAPELOS_HOME/share/seed/$1.xml"
 }
 
 seed_list() {
@@ -197,7 +199,13 @@ seed_run() {
   [[ $keep =~ ^[1-9][0-9]?$ ]] || die "SEED_SNAPSHOT_KEEP is $keep, and it takes how many snapshots of one profile to keep, 1 to 99"
   exec_quiet php test -f "$SEED_MAIL_STAND_INS" </dev/null ||
     die "this store has no $SEED_MAIL_STAND_INS, which holds the generator's stand-ins for mail. Without it the generator sends its mail through the store's own transport, so nothing is generated"
-  path="$(seed_profile_path "$profile")" || die "there's no profile called $profile. kapelos seed lists them"
+  if seed_profile_is_ours "$profile"; then
+    grep -qF "<di>../../$SEED_MAIL_STAND_INS</di>" "$KAPELOS_HOME/share/seed/$profile.xml" ||
+      die "share/seed/$profile.xml doesn't name the generator's stand-ins for mail, so its mail would go out through the store's own transport. It needs this line in its profile: <di>../../$SEED_MAIL_STAND_INS</di>"
+    path="$SEED_PROFILE_DIR/$profile.xml"
+  else
+    path="$(magento_seed_profile_path "$profile")" || die "there's no profile called $profile. kapelos seed lists them"
+  fi
   if [[ $snapshot == yes ]]; then
     # Both asked before the hours of generating, not after them.
     require_helper_starts
@@ -206,6 +214,8 @@ seed_run() {
     [[ -n $(snapshot_names) ]] || cmd_snapshot save before-seed
   fi
   seed_way_back
+  # Put there last, so a refusal above leaves nothing of the seed in the store.
+  ! seed_profile_is_ours "$profile" || seed_profile_put "$profile"
 
   step "Generating $profile with Magento's own generator. A large profile takes hours"
   SECONDS=0

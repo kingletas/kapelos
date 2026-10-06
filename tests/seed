@@ -268,7 +268,9 @@ check "a store that isn't installed is refused" refused "the store isn't install
 check "a store without the generator's stand-ins for mail is refused" refused "which holds the generator's stand-ins for mail" \
   env STUB_NO_MAIL_STAND_INS=yes KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
 grep -v "<di>" "$ROOT/share/seed/mixed-10.xml" >"$A/share/seed/bare.xml"
-check "and so is a profile of ours that doesn't name them" refused "share/seed/bare.xml doesn't name the generator's stand-ins for mail" run_on shop cmd_seed bare
+out="$(run_on shop cmd_seed bare 2>&1)" && out="it passed"
+check "and so is a profile of ours that doesn't name them" grep -q "share/seed/bare.xml doesn't name the generator's stand-ins for mail" <<<"$out"
+check "with that one reason and no other" test "$(grep -c "^kapelos: " <<<"$out")" -eq 1
 rm -f "$A/share/seed/bare.xml"
 check "none of them generated anything" lacks "generate-fixtures" "$LOG"
 check "or saved anything" lacks "volume create" "$STUB_DOCKER/calls"
@@ -276,6 +278,7 @@ check "or saved anything" lacks "volume create" "$STUB_DOCKER/calls"
 check "a snapshot Docker wouldn't make is found out before generating, not after" refused "Docker wouldn't start the small container" \
   env STUB_RUN_REFUSED="Minimum memory limit allowed is 6MB" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
 check "so nothing is generated for it" lacks "generate-fixtures" "$LOG"
+check "and no profile is left in the store" lacks "profile put at" "$LOG"
 
 reset_docker
 saved_snapshot shop clean "2026-01-05 09:00:00"
