@@ -112,12 +112,14 @@ Everything goes through one command, `bin/kapelos`. Run it on its own for the fu
 | `bin/kapelos composer install` | Run Composer |
 | `bin/kapelos db` | A MariaDB prompt on the store's database. `db dump` writes a gzipped dump |
 | `bin/kapelos snapshot save clean` | Save the database, search and queue; `snapshot restore clean` puts them back. See [Snapshots and dumps](#snapshots-and-dumps) |
+| `bin/kapelos snapshot save --series deploy` | Save one named by the time, and keep only the newest few of that series |
 | `bin/kapelos cron on` | Run Magento's scheduled jobs and queue consumers. See [Cron and queue consumers](#cron-and-queue-consumers) |
 | `bin/kapelos npm install` | npm, npx or grunt at the store's root. See [Node, npm and grunt](#node-npm-and-grunt) |
 | `bin/kapelos doctor` | Check this machine and this site. See [Checking your setup](#checking-your-setup) |
 | `bin/kapelos valkey cache` | `valkey-cli` on the cache. `valkey session` for sessions |
 | `bin/kapelos test` | The store's PHPUnit tests. See [Running the store's tests](#running-the-stores-tests) |
 | `bin/kapelos use acme` | Switch to another project. See [Several projects](#several-projects) |
+| `bin/kapelos site copy acme acme-scratch` | A second store from a site's code and one of its snapshots, to break without touching the first. See [A copy of a store, to break](#a-copy-of-a-store-to-break) |
 | `bin/kapelos site remove acme` | Delete a site's containers, database, snapshots and files |
 | `bin/kapelos modules` | The Kingletas modules. See [The Kingletas modules](#the-kingletas-modules) |
 | `bin/kapelos repositories` | The Composer repositories Kapelos can add to a store. See [Composer repositories](#composer-repositories) |
@@ -206,6 +208,8 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `KAPELOS_DISK_RESERVE_GIB` | `20` | The disk that must stay free where Docker keeps its data before a store starts or a snapshot is taken; 0 turns it off. See [Several stores at once](#several-stores-at-once) |
 | `KAPELOS_HEAVY_AT_ONCE`, `KAPELOS_HEAVY_WAIT` | `1`, `3600` | How many heavy jobs run at once across the machine, and how many seconds one waits for its turn. See [Heavy work takes turns](#heavy-work-takes-turns) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
+| `SNAPSHOT_KEEP` | `3` | How many snapshots a series keeps when `--keep` isn't given. See [Snapshots and dumps](#snapshots-and-dumps) |
+| `SNAPSHOT_BEFORE_DEPLOY` | `0` | How many snapshots `bin/kapelos deploy` keeps of the store as it was before each deploy; 0 takes none. See [Rehearsing a deployment](#rehearsing-a-deployment) |
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
 | `CRON` | `no` | `yes` runs Magento's scheduled jobs. See [Cron and queue consumers](#cron-and-queue-consumers) |
@@ -230,7 +234,39 @@ bin/kapelos sites             # lists them, with a * on the active one
 
 `demo`, `interactive` and `adopt` make sites too, so they sit in the same list. They never stop a site that's running, and go ahead only where `up` would let one more store start.
 
-`bin/kapelos site remove acme` deletes a site: its containers, database, search index, snapshots and the files Kapelos keeps for it. Kapelos lists everything first and asks you to type the site's name. The store's code stays where it is, unless Kapelos downloaded it into `var/stores/`.
+`bin/kapelos site remove acme` deletes a site: its containers, database, search index, snapshots and the files Kapelos keeps for it. Kapelos lists everything first and asks you to type the site's name. The store's code stays where it is, unless Kapelos downloaded or copied it into `var/stores/`.
+
+### A copy of a store, to break
+
+Some tests break the store they run on: a rollback, an attack rehearsal, a ban of every cached page, a module that fails halfway through `setup:upgrade`. Run them on a copy, and the store other people are looking at never notices:
+
+```bash
+bin/kapelos use acme && bin/kapelos snapshot save before-test
+bin/kapelos site copy acme acme-scratch
+```
+
+`site copy` makes a second site, `acme-scratch`, out of two things: **`acme`'s code as it is now**, copied into `var/stores/acme-scratch`, and **the database, search index and queue of one of `acme`'s snapshots**, the newest unless `--snapshot NAME` says which. It gives the copy the first block of ports no site here uses (`--slot N` picks one), its own hostname, `acme-scratch.test`, and its own address in its own database, then starts it. `acme` is only read: it isn't stopped, paused or changed, and it doesn't have to be running.
+
+When it's done:
+
+```bash
+KAPELOS_ENV=etc/sites/acme-scratch.env bin/kapelos magento indexer:status   # one command on the copy
+bin/kapelos use acme-scratch                                                # or make it the active site
+bin/kapelos site remove acme-scratch                                        # and when the test is over
+```
+
+`site remove` deletes the copy's containers, data and its copy of the code, and stops nothing else.
+
+What to know before you rely on it:
+
+- **The copy is admitted like any other store.** It starts only where `up` would let one more store start, and it counts as what the site it copies used when that last ran. Its data needs room on Docker's disk and its code needs room in this folder; each is checked before anything large is copied, and refused with the numbers.
+- **It has the same logins as the store it copies**, the admin's included, because the copied database and `env.php` already hold them. Its settings file is readable only by you.
+- **The code is today's and the data is the snapshot's.** If the store was deployed since that snapshot, the copy's database is upgraded to match its code. If the code has since lost something the snapshot's data depends on, the copy is the place you find out.
+- **It runs on one web server with no replica**, whatever the store it copies runs on, and it serves that store's default storefront only: other hostnames in `STORES` stay with the original.
+- **Add its hostname to your hosts file** the way you did for the first store.
+- **A store that pins its address in `env.php`** keeps that address in the copy, because the copy's `env.php` is the same file. Change it there.
+- **An adopted store isn't copied yet.** Its code stays where you keep it with Kapelos's `env.php` laid over it, and `site copy` says so and stops.
+- **If the copy stops part way**, it says so, and `bin/kapelos site remove acme-scratch -y` removes what was made.
 
 **Several sites can run at once, as many as the machine has room for.** A Magento stack wants several gigabytes of memory, and your computer is for the project in front of you, so another store starts only while memory and load are left over; [Several stores at once](#several-stores-at-once) says how that's decided. Switching stays cheap: `use` makes another site the active one without stopping anything, `down SITE` stops one with its data kept, and the next `up` brings it back exactly as you left it. If you need many stores running side by side, that's what [Emporion](https://github.com/kingletas/emporion) is for.
 
@@ -298,7 +334,7 @@ export KAPELOS_MEM_BUDGET_GIB=30   # and their declared memory limits add up to 
 
 ## Heavy work takes turns
 
-A store that is up and idle costs little. What fills every core is the work around it: starting a store, installing one, `composer install`, `require` or `update`, `setup:upgrade`, a compile, a static deploy, a reindex, `adopt`, `import`, `deploy` and `self-test`. So those take turns, one at a time across every Kapelos folder you run on the machine, and everything else goes straight through. A command that has to wait says what it is waiting on, once, and again only if that changes:
+A store that is up and idle costs little. What fills every core is the work around it: starting a store, installing one, `composer install`, `require` or `update`, `setup:upgrade`, a compile, a static deploy, a reindex, `adopt`, `import`, `deploy`, `self-test`, saving or restoring a snapshot, and `site copy`. So those take turns, one at a time across every Kapelos folder you run on the machine, and everything else goes straight through. A command that has to wait says what it is waiting on, once, and again only if that changes:
 
 ```text
 kapelos: waiting for a turn at heavy work, kapelos up for etc/sites/acme.env in /home/you/kapelos: busy with kapelos setup:upgrade for .env in /home/you/kapelos
@@ -561,7 +597,16 @@ bin/kapelos snapshot                 # lists them
 bin/kapelos snapshot delete clean
 ```
 
-Saving pauses the database, search and queue for as long as the copy takes, so the copy is consistent. Restoring replaces what's there, so save that first if you want it. Snapshots are Docker volumes on your machine and `site remove` deletes them with the site.
+Saving pauses the database, search and queue for as long as the copy takes, so the copy is consistent. Restoring replaces what's there, so save that first if you want it. Snapshots are Docker volumes on your machine and `site remove` deletes them with the site. Saving and restoring take a [turn at heavy work](#heavy-work-takes-turns).
+
+**A series keeps itself short.** A snapshot you take again and again, before every deploy or every night, would otherwise fill the disk until the [disk reserve](#several-stores-at-once) refused the next one:
+
+```bash
+bin/kapelos snapshot save --series nightly --keep 5   # nightly-20260114-230000, and the oldest beyond five goes
+bin/kapelos snapshot restore --latest                 # the newest snapshot, whatever it is called
+```
+
+A series names each snapshot by its prefix and the time, and after a save has finished it deletes the oldest of that series until `--keep` are left: 3 unless you say, or the site's `SNAPSHOT_KEEP`. Only snapshots of that series are ever deleted this way; one you named yourself stays until you delete it. **Budget the disk for one more than you keep**, since the new one is copied before the oldest goes. They all live where Docker keeps its data, with everything else of the site's.
 
 A dump is for taking a database somewhere else:
 
@@ -591,6 +636,14 @@ This runs the steps a production deployment runs, in the same order, on your tre
 9. Turn off maintenance mode.
 
 On a fresh store it takes me about a minute and a half. If a step fails, Kapelos stops there, tells you which step, and leaves the store in maintenance mode, the way a real deployment would.
+
+**A snapshot before every deploy.** Set `SNAPSHOT_BEFORE_DEPLOY=3` in the site's settings and `deploy` saves one in the `deploy` series right after step 1, behind the maintenance page, keeping the newest three. A deploy that then fails names it:
+
+```text
+The database, search index and queue as they were before this deploy are the snapshot deploy-20260114-020000: kapelos snapshot restore deploy-20260114-020000 puts them back. The code is yours to put back.
+```
+
+It costs the time of the copy on every deploy, with the store in maintenance mode, and if there's no room for it on the disk the deploy stops at that step with nothing changed but the maintenance page. A snapshot holds the data and not the code: going back is the snapshot and the commit you deployed from, which is what [`rollback`](share/README.md) checks out.
 
 **To go back to working on the store:**
 

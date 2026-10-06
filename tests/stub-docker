@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # A stand-in for docker that answers from files in $STUB_DOCKER, logs every call, and starts nothing.
 # containers holds id|project|folder|memory|state lines, with an optional sixth field for the bytes in use that
-# docker stats reports; volumes holds name|project|snapshot-project lines,
-# and compose-config is what docker compose config prints. data-root, when it is there, holds the folder
-# docker info names as Docker's own, and volume-kib holds name|KiB lines for what du finds in a volume.
+# docker stats reports; volumes holds name|project|snapshot-project lines, with the snapshot's name and when it
+# was saved as a fourth and fifth field, and compose-config is what docker compose config prints. data-root,
+# when it is there, holds the folder docker info names as Docker's own, and volume-kib holds name|KiB lines for
+# what du finds in a volume. A volume made or removed is added to volumes or taken out of it.
 set -euo pipefail
 
 printf '%s\n' "$*" >>"$STUB_DOCKER/calls"
@@ -83,21 +84,66 @@ stub_stats() {
   done
 }
 
+# docker volume ls -q --filter label=KEY=VALUE prints names; --filter ... --format, as snapshot_names asks,
+# prints each matching volume's snapshot name.
 stub_volume_ls() {
-  local label value name project snapshot
-  [[ ${1:-} == -q && ${2:-} == --filter ]] || unexpected volume ls "$@"
-  label="${3#label=}"
+  local label value name project snapshot snapshot_name created names=no
+  if [[ ${1:-} == -q && ${2:-} == --filter ]]; then
+    names=yes
+    shift
+  fi
+  [[ ${1:-} == --filter ]] || unexpected volume ls "$@"
+  [[ $names == yes || ${3:-} == --format ]] || unexpected volume ls "$@"
+  label="${2#label=}"
   value="${label#*=}"
   label="${label%%=*}"
-  while IFS='|' read -r name project snapshot; do
+  while IFS='|' read -r name project snapshot snapshot_name created; do
     [[ -n $name ]] || continue
     case "$label" in
       com.docker.compose.project) [[ $project == "$value" ]] || continue ;;
       kapelos.snapshot.project) [[ $snapshot == "$value" ]] || continue ;;
       *) unexpected volume ls "$@" ;;
     esac
-    echo "$name"
+    if [[ $names == yes ]]; then echo "$name"; else echo "$snapshot_name"; fi
   done <"$volumes"
+}
+
+# docker volume inspect -f FORMAT NAME: when the snapshot it belongs to was saved.
+stub_volume_inspect() {
+  local name project snapshot snapshot_name created
+  [[ ${1:-} == -f && ${2:-} == *kapelos.snapshot.created* && $# -eq 3 ]] || unexpected volume inspect "$@"
+  while IFS='|' read -r name project snapshot snapshot_name created; do
+    if [[ $name == "$3" ]]; then
+      echo "$created"
+      return 0
+    fi
+  done <"$volumes"
+  exit 1
+}
+
+# docker volume create --label KEY=VALUE... NAME: one more line in volumes.
+stub_volume_create() {
+  local snapshot="" snapshot_name="" created=""
+  while [[ ${1:-} == --label ]]; do
+    case "$2" in
+      kapelos.snapshot=*) snapshot_name="${2#*=}" ;;
+      kapelos.snapshot.project=*) snapshot="${2#*=}" ;;
+      kapelos.snapshot.created=*) created="${2#*=}" ;;
+      *) unexpected volume create --label "$2" ;;
+    esac
+    shift 2
+  done
+  [[ $# -eq 1 ]] || unexpected volume create "$@"
+  echo "$1||$snapshot|$snapshot_name|$created" >>"$volumes"
+  echo "$1"
+}
+
+stub_volume_rm() {
+  [[ $# -eq 1 ]] || unexpected volume rm "$@"
+  grep -q "^$1|" "$volumes" || { echo "Error: No such volume: $1" >&2 && exit 1; }
+  grep -v "^$1|" "$volumes" >"$volumes.new" || true
+  mv "$volumes.new" "$volumes"
+  echo "$1"
 }
 
 # docker info --format '{{.DockerRootDir}}': the folder in data-root, or a failure, as where Docker can't be asked.
@@ -108,8 +154,12 @@ stub_info() {
 }
 
 # docker run --rm -v NAME:/from:ro alpine du -sk /from: the volume's line in volume-kib, as du prints it.
+# docker run --rm -v FROM:/from:ro -v TO:/to alpine sh -c ...: one volume copied into another, which calls records.
 stub_run() {
   local name kib want
+  if [[ ${1:-} == --rm && ${2:-} == -v && ${3:-} == *:/from:ro && ${4:-} == -v && ${5:-} == *:/to && ${6:-} == alpine && ${7:-} == sh ]]; then
+    return 0
+  fi
   [[ ${1:-} == --rm && ${2:-} == -v && ${4:-} == alpine && ${5:-} == du ]] || unexpected run "$@"
   want="${3%%:*}"
   while IFS='|' read -r name kib; do
@@ -143,9 +193,15 @@ case "${1:-}" in
     stub_stats "$@"
     ;;
   volume)
-    [[ ${2:-} == ls ]] || unexpected "$@"
+    action="${2:-}"
     shift 2
-    stub_volume_ls "$@"
+    case "$action" in
+      ls) stub_volume_ls "$@" ;;
+      inspect) stub_volume_inspect "$@" ;;
+      create) stub_volume_create "$@" ;;
+      rm) stub_volume_rm "$@" ;;
+      *) unexpected volume "$action" "$@" ;;
+    esac
     ;;
   compose)
     for arg in "$@"; do
@@ -153,8 +209,8 @@ case "${1:-}" in
         cat "$STUB_DOCKER/compose-config"
         exit 0
       fi
-      # Stopping is logged in calls, which is all a test needs of it.
-      [[ $arg != down ]] || exit 0
+      # Stopping, and making a site's containers and volumes, are logged in calls, which is all a test needs of them.
+      case "$arg" in down | stop | create) exit 0 ;; esac
     done
     unexpected "$@"
     ;;

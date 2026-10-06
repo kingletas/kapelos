@@ -200,23 +200,29 @@ volume_bytes() {
 # A snapshot is a second copy of the database, the search index and the queue, so it is refused when that copy
 # would eat into the reserve.
 require_disk_room_for_snapshot() {
-  local site="${COMPOSE_PROJECT_NAME#kapelos-}" reserve root free volume bytes need=0
+  require_disk_room_for_copy "a snapshot of ${COMPOSE_PROJECT_NAME#kapelos-}" "this snapshot" "${COMPOSE_PROJECT_NAME}_"
+}
+
+# Refuses a copy of a site's volumes that would eat into the disk reserve. WHAT names the copy in the refusal,
+# SHORT in the line that says it couldn't be measured, and PREFIX is what the three volumes' names start with.
+require_disk_room_for_copy() {
+  local what="$1" short="$2" prefix="$3" reserve root free volume bytes need=0
   reserve="$(disk_reserve_gib)" || exit 1
   [[ $reserve -gt 0 ]] || return 0
   root="$(docker_data_dir)" || return 0
   free="$(free_bytes_in "$root")" || return 0
   for volume in $SNAPSHOT_VOLUMES; do
-    if ! bytes="$(volume_bytes "${COMPOSE_PROJECT_NAME}_$volume")"; then
-      echo "kapelos: can't measure $volume, so the disk reserve isn't checked for this snapshot" >&2
+    if ! bytes="$(volume_bytes "$prefix$volume")"; then
+      echo "kapelos: can't measure $volume, so the disk reserve isn't checked for $short" >&2
       return 0
     fi
     need=$((need + bytes))
   done
   [[ $need -le $free ]] ||
-    die "a snapshot of $site copies $(gib "$need") GiB, more than the $(gib "$free") GiB free where Docker keeps its data ($root).
+    die "$what copies $(gib "$need") GiB, more than the $(gib "$free") GiB free where Docker keeps its data ($root).
 kapelos snapshot delete NAME removes an old one"
   [[ $((free - need)) -ge $((reserve * GIB_BYTES)) ]] ||
-    die "a snapshot of $site copies $(gib "$need") GiB, which would leave $(gib $((free - need))) GiB free where Docker keeps its data ($root): $(gib "$free") GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
+    die "$what copies $(gib "$need") GiB, which would leave $(gib $((free - need))) GiB free where Docker keeps its data ($root): $(gib "$free") GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
 kapelos snapshot delete NAME removes an old one"
 }
 
@@ -346,9 +352,48 @@ db_dump() {
   echo "Wrote $file, $(du -h "$file" | cut -f 1)."
 }
 
+# The snapshots of a project, this site's unless one is named, in name order.
 snapshot_names() {
-  docker volume ls --filter "label=kapelos.snapshot.project=$COMPOSE_PROJECT_NAME" \
-    --format '{{.Label "kapelos.snapshot"}}' | sort -u
+  docker volume ls --filter "label=kapelos.snapshot.project=${1:-$COMPOSE_PROJECT_NAME}" \
+    --format '{{.Label "kapelos.snapshot"}}' | LC_ALL=C sort -u
+}
+
+# When a project's snapshot was saved, as it was written on its volumes.
+snapshot_created() {
+  docker volume inspect -f '{{index .Labels "kapelos.snapshot.created"}}' "$1_snapshot-$2-db-data" 2>/dev/null || true
+}
+
+# The newest snapshot of a project, by when it was saved and then by name; nothing when it has none.
+snapshot_latest() {
+  local project="${1:-$COMPOSE_PROJECT_NAME}" name
+  for name in $(snapshot_names "$project"); do
+    printf '%s\t%s\n' "$(snapshot_created "$project" "$name")" "$name"
+  done | LC_ALL=C sort | tail -n 1 | cut -f 2
+}
+
+# The snapshots of a series, oldest first. A series is PREFIX-YYYYMMDD-HHMMSS, so name order is age order.
+snapshot_series() {
+  snapshot_names | grep -E "^$1-[0-9]{8}-[0-9]{6}\$" || true
+}
+
+snapshot_remove() {
+  local volume
+  for volume in $SNAPSHOT_VOLUMES; do
+    docker volume rm "${COMPOSE_PROJECT_NAME}_snapshot-$1-$volume" >/dev/null
+  done
+}
+
+# Deletes the oldest snapshots of a series until KEEP are left. It runs after a save has finished, so the
+# newest is always kept and the disk holds one more than KEEP only while that save is copying.
+snapshot_prune_series() {
+  local prefix="$1" keep="$2" names count name
+  names="$(snapshot_series "$prefix")"
+  count="$(grep -c . <<<"$names" || true)"
+  [[ $count -gt $keep ]] || return 0
+  for name in $(head -n $((count - keep)) <<<"$names"); do
+    snapshot_remove "$name"
+    echo "Deleted $name: $prefix keeps its newest $keep."
+  done
 }
 
 valid_snapshot_name() {
@@ -362,33 +407,53 @@ copy_volume() {
 
 cmd_snapshot() {
   load_env
-  local action="${1:-list}" name="" yes=no volume created
+  local action="${1:-list}" name="" yes=no series="" keep="" latest=no volume created
   [[ $# -gt 0 ]] && shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -y) yes=yes ;;
+      --latest) latest=yes ;;
+      --series | --keep)
+        [[ $# -ge 2 ]] || die "$1 takes a value, for example: kapelos snapshot save --series deploy --keep 3"
+        if [[ $1 == --series ]]; then series="$2"; else keep="$2"; fi
+        shift
+        ;;
+      --series=*) series="${1#--series=}" ;;
+      --keep=*) keep="${1#--keep=}" ;;
+      -*) die "snapshot doesn't know $1. See: kapelos help" ;;
       *) name="$1" ;;
     esac
     shift
   done
+  [[ $latest == no || $action == restore ]] || die "--latest goes with restore: kapelos snapshot restore --latest"
+  [[ -z $series$keep || $action == save ]] || die "--series and --keep go with save: kapelos snapshot save --series deploy --keep 3"
   case "$action" in
     list)
       local found=0
       for name in $(snapshot_names); do
         found=1
-        created="$(docker volume inspect -f '{{index .Labels "kapelos.snapshot.created"}}' "${COMPOSE_PROJECT_NAME}_snapshot-$name-db-data" 2>/dev/null || true)"
-        printf '  %-24s %s\n' "$name" "$created"
+        printf '  %-24s %s\n' "$name" "$(snapshot_created "$COMPOSE_PROJECT_NAME" "$name")"
       done
       [[ $found -eq 1 ]] || echo "No snapshots yet. kapelos snapshot save NAME takes one."
       ;;
     save)
+      # A series names its own snapshots by the time they are taken, and keeps only its newest few.
+      if [[ -n $series ]]; then
+        [[ -z $name ]] || die "a snapshot is saved under a name or in a series, not both: kapelos snapshot save $name, or kapelos snapshot save --series $series"
+        valid_snapshot_name "$series"
+        keep="${keep:-${SNAPSHOT_KEEP:-3}}"
+        [[ $keep =~ ^[1-9][0-9]?$ ]] || die "--keep takes how many snapshots of the series to keep, 1 to 99, and got: $keep"
+        name="$series-$(date +%Y%m%d-%H%M%S)"
+      else
+        [[ -z $keep ]] || die "--keep goes with --series: kapelos snapshot save --series deploy --keep $keep"
+      fi
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot save NAME"
       valid_snapshot_name "$name"
       [[ -z $(snapshot_names | grep -x "$name" || true) ]] || die "there's already a snapshot called $name. kapelos snapshot delete $name removes it"
       require_disk_room_for_snapshot
       step "Pausing the database, search and queue so the copy is consistent"
       compose stop db opensearch rabbitmq
-      created="$(date '+%Y-%m-%d %H:%M')"
+      created="$(date '+%Y-%m-%d %H:%M:%S')"
       for volume in $SNAPSHOT_VOLUMES; do
         docker volume create --label "kapelos.snapshot=$name" --label "kapelos.snapshot.project=$COMPOSE_PROJECT_NAME" \
           --label "kapelos.snapshot.created=$created" "${COMPOSE_PROJECT_NAME}_snapshot-$name-$volume" >/dev/null
@@ -397,9 +462,15 @@ cmd_snapshot() {
       done
       cmd_up
       echo "Saved $name. kapelos snapshot restore $name puts it back."
+      [[ -z $series ]] || snapshot_prune_series "$series" "$keep"
       ;;
     restore)
-      [[ -n $name ]] || die "name the snapshot: kapelos snapshot restore NAME. kapelos snapshot lists them"
+      if [[ $latest == yes ]]; then
+        [[ -z $name ]] || die "restore takes a name or --latest, not both"
+        name="$(snapshot_latest)"
+        [[ -n $name ]] || die "there's no snapshot to restore. kapelos snapshot save NAME takes one"
+      fi
+      [[ -n $name ]] || die "name the snapshot: kapelos snapshot restore NAME, or --latest for the newest. kapelos snapshot lists them"
       [[ -n $(snapshot_names | grep -x "$name" || true) ]] || die "there's no snapshot called $name. kapelos snapshot lists them"
       confirm "Replace this site's database, search index and queue with the snapshot $name? What's there now is lost unless you save it first." "$yes" || exit 1
       step "Stopping the database, search and queue"
@@ -418,12 +489,10 @@ cmd_snapshot() {
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot delete NAME"
       [[ -n $(snapshot_names | grep -x "$name" || true) ]] || die "there's no snapshot called $name"
       confirm "Delete the snapshot $name? It can't be brought back." "$yes" || exit 1
-      for volume in $SNAPSHOT_VOLUMES; do
-        docker volume rm "${COMPOSE_PROJECT_NAME}_snapshot-$name-$volume" >/dev/null
-      done
+      snapshot_remove "$name"
       echo "Deleted $name."
       ;;
-    *) die "kapelos snapshot [list], save NAME, restore NAME or delete NAME" ;;
+    *) die "kapelos snapshot [list], save NAME, save --series PREFIX [--keep N], restore NAME, restore --latest or delete NAME" ;;
   esac
 }
 
@@ -448,14 +517,16 @@ clear_cache_files() {
   exec_quiet php sh -c 'rm -rf var/cache/* var/page_cache/*'
 }
 
-# Sessions live in valkey-session and are left alone, so no one signed in is logged out.
+# Sessions live in valkey-session and are left alone, so no one signed in is logged out. Valkey is emptied
+# before Magento is asked to flush: a cache that still names code or settings the store no longer has, as
+# after a restore or a rollback, stops bin/magento from starting at all.
 cmd_cache_reset() {
   require_running php valkey-cache varnish
   clear_cache_files
-  step "Magento: cache:flush"
-  magento cache:flush >/dev/null
   step "Valkey: emptying the cache and full-page cache"
   compose_exec valkey-cache valkey-cli FLUSHALL >/dev/null
+  step "Magento: cache:flush"
+  magento cache:flush >/dev/null
   step "Varnish: banning every cached page"
   compose_exec varnish varnishadm "ban req.url ~ ." >/dev/null
   echo "Every cache is empty."
@@ -543,19 +614,34 @@ deploy_step() {
   if ! "$@"; then
     echo "kapelos: stopped at: $description" >&2
     echo "The store is still in maintenance mode. Fix the problem and run kapelos deploy again, or go back with kapelos develop." >&2
+    [[ -z ${DEPLOY_SNAPSHOT:-} ]] ||
+      echo "The database, search index and queue as they were before this deploy are the snapshot $DEPLOY_SNAPSHOT: kapelos snapshot restore $DEPLOY_SNAPSHOT puts them back. The code is yours to put back." >&2
     exit 1
   fi
+}
+
+# In a shell of its own, so a refusal, such as no room on the disk, comes back to the deploy as a failed step.
+snapshot_before_deploy() {
+  (cmd_snapshot save --series deploy --keep "$1")
 }
 
 # Runs the steps a server deployment runs, in the same order, on the mounted tree.
 cmd_deploy() {
   load_env
   require_running php
-  local locales
+  local locales keep="${SNAPSHOT_BEFORE_DEPLOY:-0}"
   read -r -a locales <<<"${DEPLOY_LOCALES:-en_US}"
   [[ ${#locales[@]} -gt 0 ]] || locales=(en_US)
+  [[ $keep =~ ^[0-9]{1,2}$ ]] || die "SNAPSHOT_BEFORE_DEPLOY is $keep, and it takes how many snapshots of deploys to keep, 0 for none"
+  # In base ten whatever it looks like: bash reads 08 as an octal number that doesn't exist.
+  keep=$((10#$keep))
 
   deploy_step "Turning on maintenance mode" magento_on_every_server maintenance:enable
+  # Behind the maintenance page, because saving pauses the database for as long as the copy takes.
+  if [[ $keep -gt 0 ]]; then
+    deploy_step "Saving a snapshot to go back to, keeping the newest $keep" snapshot_before_deploy "$keep"
+    DEPLOY_SNAPSHOT="$(snapshot_series deploy | tail -n 1)"
+  fi
   deploy_step "Installing packages without the development ones" exec_php composer install --no-dev --no-interaction
   deploy_step "Upgrading the database" magento setup:upgrade
   deploy_step "Compiling dependency injection" exec_php_no_xdebug php -d memory_limit=-1 bin/magento setup:di:compile
