@@ -142,6 +142,10 @@ machine 64 0.00
 for bad in -1 8.5 lots; do
   KAPELOS_RESERVE_GIB="$bad" check "KAPELOS_RESERVE_GIB=$bad is refused" up_refused web "KAPELOS_RESERVE_GIB is $bad"
 done
+machine 12 0.00
+KAPELOS_RESERVE_GIB=08 check "a memory reserve written 08 is eight, not an octal number that doesn't exist" up_refused web \
+  "KAPELOS_RESERVE_GIB keeps 8 GiB free"
+machine 64 0.00
 for bad in -1 high 6.; do
   KAPELOS_MAX_LOAD="$bad" check "KAPELOS_MAX_LOAD=$bad is refused" up_refused web "KAPELOS_MAX_LOAD is $bad"
 done
@@ -182,6 +186,14 @@ KAPELOS_DISK_RESERVE_GIB=10 check "a smaller disk reserve admits it" up_passes w
 for bad in -1 2.5 lots; do
   KAPELOS_DISK_RESERVE_GIB="$bad" check "KAPELOS_DISK_RESERVE_GIB=$bad is refused" up_refused web "KAPELOS_DISK_RESERVE_GIB is $bad"
 done
+disk 7
+KAPELOS_DISK_RESERVE_GIB=08 check "a disk reserve written 08 is eight, not an octal number that doesn't exist" up_refused web \
+  "7.0 GiB is free there, and KAPELOS_DISK_RESERVE_GIB keeps 8 GiB free"
+disk 12
+KAPELOS_DISK_RESERVE_GIB=08 check "and admits a store with more than eight free" up_passes web
+disk 18
+KAPELOS_DISK_RESERVE_GIB=020 check "a disk reserve written 020 is twenty, not sixteen" up_refused web \
+  "KAPELOS_DISK_RESERVE_GIB keeps 20 GiB free"
 running w1 web $((4 * GIB))
 disk 1
 check "a site already running is re-applied whatever the disk holds" up_passes web
@@ -243,6 +255,9 @@ disk 40
 check "and is refused when its copy would eat into the reserve, with the numbers" snapshot_refused web \
   "a snapshot of web copies 31.0 GiB, which would leave 9.0 GiB free where Docker keeps its data ($SCRATCH/docker-data): 40.0 GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps 20 GiB free." \
   "kapelos snapshot delete NAME removes an old one"
+disk 25
+check "a snapshot larger than what is free says so, with no negative number" snapshot_refused web \
+  "a snapshot of web copies 31.0 GiB, more than the 25.0 GiB free where Docker keeps its data"
 KAPELOS_DISK_RESERVE_GIB=0 check "KAPELOS_DISK_RESERVE_GIB=0 lets the snapshot through" snapshot_passes web
 : >"$STUB_DOCKER/volume-kib"
 out="$(bash "$SCRATCH/snapshot" web 2>&1)" && status=0 || status=$?

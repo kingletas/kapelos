@@ -287,7 +287,7 @@ yes_if() {
 cmd_doctor() {
   REPORT_FAILS=0
   REPORT_WARNS=0
-  local version major minor memory free root port running=no release row actual tool rc busy i n
+  local version major minor memory free floor root port running=no release row actual tool rc busy i n
   echo "This machine"
   if ! command -v docker >/dev/null; then
     report_line FAIL "Docker isn't installed"
@@ -311,7 +311,10 @@ cmd_doctor() {
     root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
     if [[ -d $root ]]; then
       free="$(df -Pk "$root" | awk 'NR == 2 { print int($4 / 1048576) }')"
-      report_either "$(yes_if test "$free" -ge 20)" "$free GiB free for Docker's data" WARN "$free GiB free for Docker's data; a database copy or snapshot needs room"
+      # The line a store's start is held to, so doctor and up can't disagree; 20 where the reserve is switched off.
+      floor="$(disk_reserve_gib)" || exit 1
+      [[ $floor -gt 0 ]] || floor=20
+      report_either "$(yes_if test "$free" -ge "$floor")" "$free GiB free for Docker's data" WARN "$free GiB free for Docker's data, under the $floor a store's start and a snapshot need there"
     else
       report_line note "Docker's data folder can't be read from here, so KAPELOS_DISK_RESERVE_GIB isn't checked when a store starts or a snapshot is taken"
     fi

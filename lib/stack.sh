@@ -126,6 +126,8 @@ require_room_for_another() {
   max_load="${KAPELOS_MAX_LOAD:-$(awk -v c="$cores" 'BEGIN { printf "%g\n", c * 0.75 }')}"
   [[ $reserve =~ ^[0-9]{1,5}$ ]] || die "KAPELOS_RESERVE_GIB is $reserve, and it takes the whole GiB of memory to keep free, 0 for no reserve"
   [[ $max_load =~ ^[0-9]{1,4}([.][0-9]+)?$ ]] || die "KAPELOS_MAX_LOAD is $max_load, and it takes a load average such as 6 or 5.5, 0 for no limit"
+  # In base ten whatever it looks like: bash reads 08 as an octal number that doesn't exist, and 020 as 16.
+  reserve=$((10#$reserve))
   [[ $reserve != 0 || $max_load != 0 ]] || return 0
   others="$(daemon_kapelos_containers | awk -v me="$current" '$1 != me { print $1 }' | sort -u | sed 's/^kapelos-//' | tr '\n' ' ')"
   [[ -n $others ]] || return 0
@@ -172,7 +174,8 @@ free_bytes_in() {
 disk_reserve_gib() {
   local reserve="${KAPELOS_DISK_RESERVE_GIB:-$DEFAULT_DISK_RESERVE_GIB}"
   [[ $reserve =~ ^[0-9]{1,6}$ ]] || die "KAPELOS_DISK_RESERVE_GIB is $reserve, and it takes the whole GiB of disk to keep free where Docker keeps its data, 0 for no reserve"
-  printf '%s' "$reserve"
+  # In base ten whatever it looks like: bash reads 08 as an octal number that doesn't exist, and 020 as 16.
+  printf '%s' "$((10#$reserve))"
 }
 
 # A store's database, search index and snapshots all live where Docker keeps its data, and a stopped store keeps
@@ -209,6 +212,9 @@ require_disk_room_for_snapshot() {
     fi
     need=$((need + bytes))
   done
+  [[ $need -le $free ]] ||
+    die "a snapshot of $site copies $(gib "$need") GiB, more than the $(gib "$free") GiB free where Docker keeps its data ($root).
+kapelos snapshot delete NAME removes an old one"
   [[ $((free - need)) -ge $((reserve * GIB_BYTES)) ]] ||
     die "a snapshot of $site copies $(gib "$need") GiB, which would leave $(gib $((free - need))) GiB free where Docker keeps its data ($root): $(gib "$free") GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
 kapelos snapshot delete NAME removes an old one"
