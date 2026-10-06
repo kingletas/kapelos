@@ -206,6 +206,7 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `KAPELOS_MAX_RUNNING`, `KAPELOS_MEM_BUDGET_GIB` | *(none)* | Limits across every Kapelos folder on one Docker. See [Two stores on one machine](#two-stores-on-one-machine) |
 | `KAPELOS_RESERVE_GIB`, `KAPELOS_MAX_LOAD` | `8`, three quarters of the cores | The memory another store must leave free, and the five-minute load it must start under; 0 turns either off. See [Several stores at once](#several-stores-at-once) |
 | `KAPELOS_DISK_RESERVE_GIB` | `20` | The disk that must stay free where Docker keeps its data before a store starts or a snapshot is taken; 0 turns it off. See [Several stores at once](#several-stores-at-once) |
+| `KAPELOS_HELPER_MEMORY`, `KAPELOS_HELPER_CPUS`, `KAPELOS_HELPER_CGROUP_PARENT` | `512m`, `1`, *(none)* | The limits on the small containers Kapelos starts by itself to measure or copy a volume, and a cgroup to put them in. See [Several stores at once](#several-stores-at-once) |
 | `KAPELOS_HEAVY_AT_ONCE`, `KAPELOS_HEAVY_WAIT` | `1`, `3600` | How many heavy jobs run at once across the machine, and how many seconds one waits for its turn. See [Heavy work takes turns](#heavy-work-takes-turns) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
 | `SNAPSHOT_KEEP` | `3` | How many snapshots a series keeps when `--keep` isn't given. See [Snapshots and dumps](#snapshots-and-dumps) |
@@ -296,6 +297,8 @@ kapelos snapshot delete NAME removes an old one
 ```
 
 `KAPELOS_DISK_RESERVE_GIB` sets the amount, and 0 turns it off. The check sees a store start and a snapshot being taken, not a running store filling its database, so the reserve is what gives you time to notice. Docker Desktop keeps its data inside its own virtual machine, where Kapelos can't read the space left: there the check asks nothing, and `kapelos doctor` says so.
+
+**The containers Kapelos starts by itself.** A snapshot, a restore and `site copy` measure and copy volumes with a small container that is not one of the store's services, so no limit in a compose file reaches it. Each of those runs with no network, 512 MiB of memory and one CPU, and is removed when it ends. `KAPELOS_HELPER_MEMORY` and `KAPELOS_HELPER_CPUS` change the two limits, written the way Docker writes them (`2g`, `0.5`). On a machine that keeps its containers under a cgroup of its own, as `cgroup_parent` does for a service in `compose.local.yaml`, `KAPELOS_HELPER_CGROUP_PARENT` names it, `work.slice` for one, and these containers go there too. A value Docker would not take is refused by its setting's name before anything is stopped or copied. `adopt`'s own copying containers are not under these limits yet.
 
 **Ports.** Each site of a folder has its own block of ports. `kapelos env SITE` gives a new site the first block no other site here uses, and `--slot N` picks one; the table in [Two stores on one machine](#two-stores-on-one-machine) lists them. A site made before blocks, on the default ports, moves with `kapelos site ports SITE`, which prints the commands that change the address in its store's database. `up` refuses a site whose ports a running site publishes, and names both. `kapelos info` shows the site's block.
 

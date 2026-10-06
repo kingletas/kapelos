@@ -532,6 +532,7 @@ site_copy() {
   target="$KAPELOS_HOME/$STORES_DIR/$name"
   [[ ! -e $target ]] || die "$target is already there. Move it aside first"
   require_name_free_on_daemon "$name"
+  require_helper_limits
   if [[ -n $snapshot ]]; then
     valid_snapshot_name "$snapshot"
     snapshot_names "$source_project" | holds -qx "$snapshot" ||
