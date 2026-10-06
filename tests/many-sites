@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Several sites from one folder at once: up admits another store by the memory and load left, refuses a
+# Several sites from one folder at once: up admits another store by the memory, load and disk left, refuses a
 # site whose ports a running one publishes, use stops nothing, down SITE and stop-others stop what they
 # name, and sites shows what each uses. Offline: docker is tests/stub-docker, and nothing starts a container.
 set -euo pipefail
@@ -149,6 +149,108 @@ done
 running w1 web $((4 * GIB))
 machine 1 99.00
 check "a site already running is re-applied, not admitted again" up_passes web
+
+# --- room on Docker's disk -------------------------------------------------
+
+# A stand-in df: the space free is whatever the file $STUB_DF names holds, in KiB.
+cat >"$SCRATCH/bin/df" <<'EOF'
+#!/usr/bin/env bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "stub 0 0 $(cat "$STUB_DF") 0% /"
+EOF
+chmod +x "$SCRATCH/bin/df"
+export STUB_DF="$SCRATCH/disk-free-kib"
+mkdir -p "$SCRATCH/docker-data"
+unset KAPELOS_DISK_RESERVE_GIB
+
+# Docker's data folder as the disk check reads it: where it is, and the GiB free there.
+disk() {
+  printf '%s' "$SCRATCH/docker-data" >"$STUB_DOCKER/data-root"
+  echo $(($1 * 1024 * 1024)) >"$STUB_DF"
+}
+
+reset_docker
+machine 64 0.00
+disk 100
+check "a store starts when the disk reserve stays free" up_passes web
+disk 12
+check "a first store is refused too when Docker's disk is under the reserve, with the numbers" up_refused web \
+  "starting web needs room where Docker keeps its data ($SCRATCH/docker-data): 12.0 GiB is free there, and KAPELOS_DISK_RESERVE_GIB keeps 20 GiB free." \
+  "kapelos snapshot lists this site's snapshots"
+KAPELOS_DISK_RESERVE_GIB=0 check "KAPELOS_DISK_RESERVE_GIB=0 turns the disk reserve off" up_passes web
+KAPELOS_DISK_RESERVE_GIB=10 check "a smaller disk reserve admits it" up_passes web
+for bad in -1 2.5 lots; do
+  KAPELOS_DISK_RESERVE_GIB="$bad" check "KAPELOS_DISK_RESERVE_GIB=$bad is refused" up_refused web "KAPELOS_DISK_RESERVE_GIB is $bad"
+done
+running w1 web $((4 * GIB))
+disk 1
+check "a site already running is re-applied whatever the disk holds" up_passes web
+reset_docker
+echo 1048576 >"$STUB_DF"
+check "where Docker's folder can't be read, nothing is asked and nothing is said" up_passes web
+
+# cmd_snapshot save for one site in a process of its own, stopping where it would pause the database.
+cat >"$SCRATCH/snapshot" <<EOF
+set -euo pipefail
+cd "$A"
+KAPELOS_HOME="$A"
+ENV_FILE="etc/sites/\$1.env"
+SITES_DIR=etc/sites
+STORES_DIR=var/stores
+PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
+PORT_SLOT_STRIDE=100
+PROJECT_KEYS=""
+SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
+. lib/core.sh
+. lib/sites.sh
+. lib/stack.sh
+. lib/scale.sh
+snapshot_names() { :; }
+step() {
+  echo "reached the copy"
+  exit 0
+}
+cmd_snapshot save before-upgrade
+EOF
+
+snapshot_passes() {
+  local out
+  out="$(bash "$SCRATCH/snapshot" "$1" 2>&1)" || return 1
+  [[ $out == "reached the copy" ]]
+}
+
+snapshot_refused() {
+  local site="$1" out expect
+  shift
+  out="$(bash "$SCRATCH/snapshot" "$site" 2>&1)" && return 1
+  for expect in "$@"; do
+    grep -qF -- "$expect" <<<"$out" || return 1
+  done
+}
+
+# What du finds in web's three volumes: 24 GiB, 6 GiB and 1 GiB.
+volumes_of_web() {
+  printf '%s\n' "kapelos-web_db-data|$((24 * 1024 * 1024))" "kapelos-web_opensearch-data|$((6 * 1024 * 1024))" \
+    "kapelos-web_rabbitmq-data|$((1024 * 1024))" >"$STUB_DOCKER/volume-kib"
+}
+
+reset_docker
+running w1 web $((4 * GIB))
+volumes_of_web
+disk 60
+check "a snapshot is taken when the reserve stays free after its copy" snapshot_passes web
+disk 40
+check "and is refused when its copy would eat into the reserve, with the numbers" snapshot_refused web \
+  "a snapshot of web copies 31.0 GiB, which would leave 9.0 GiB free where Docker keeps its data ($SCRATCH/docker-data): 40.0 GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps 20 GiB free." \
+  "kapelos snapshot delete NAME removes an old one"
+KAPELOS_DISK_RESERVE_GIB=0 check "KAPELOS_DISK_RESERVE_GIB=0 lets the snapshot through" snapshot_passes web
+: >"$STUB_DOCKER/volume-kib"
+out="$(bash "$SCRATCH/snapshot" web 2>&1)" && status=0 || status=$?
+check "a volume that can't be measured doesn't stop the snapshot" test "$status" -eq 0
+check "and it says the reserve wasn't checked" grep -q "can't measure db-data, so the disk reserve isn't checked for this snapshot" <<<"$out"
+rm -f "$STUB_DOCKER/data-root"
+volumes_of_web
+check "where Docker's folder can't be read, a snapshot asks nothing and says nothing" snapshot_passes web
 
 # --- ports ---------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- `kapelos up` refuses to start a store, the first one too, when less than `KAPELOS_DISK_RESERVE_GIB` (20) is free where Docker keeps its data, and `kapelos snapshot save` refuses a snapshot whose copy would leave less, each with the numbers. 0 turns it off. Where that folder can't be read, as under Docker Desktop, the check asks nothing and `kapelos doctor` says so.
 - Several sites from one folder run at once. `kapelos up` starts another store only if, after what it used when it last ran, `KAPELOS_RESERVE_GIB` (8) of memory stays free and the five-minute load is under `KAPELOS_MAX_LOAD` (three quarters of the cores); otherwise it refuses and gives the numbers. A first store always starts, as before. `up` also refuses a site whose ports a running site publishes, naming both.
 - `kapelos use` no longer stops anything; it only chooses the active site. `kapelos down SITE` stops one site and `kapelos stop-others` every one but the active site. `kapelos sites` shows the memory each site uses or last used, and its storefront port.
 - A new site gets the first block of ports no other site of its folder uses, so the first is still slot 0. `kapelos site ports SITE` moves a stopped site to a free block, or the slot named, and prints how to change its store's address. `kapelos info` shows the site's block.

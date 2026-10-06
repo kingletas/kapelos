@@ -312,6 +312,8 @@ cmd_doctor() {
     if [[ -d $root ]]; then
       free="$(df -Pk "$root" | awk 'NR == 2 { print int($4 / 1048576) }')"
       report_either "$(yes_if test "$free" -ge 20)" "$free GiB free for Docker's data" WARN "$free GiB free for Docker's data; a database copy or snapshot needs room"
+    else
+      report_line note "Docker's data folder can't be read from here, so KAPELOS_DISK_RESERVE_GIB isn't checked when a store starts or a snapshot is taken"
     fi
   fi
   for tool in curl python3 gzip; do

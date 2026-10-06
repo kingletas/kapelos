@@ -48,6 +48,9 @@ DEFAULT_RESERVE_GIB=8
 # What a site that has never been measured counts as: a stack with sample data idles near this.
 UNMEASURED_SITE_GIB=6
 GIB_BYTES=1073741824
+# What must stay free where Docker keeps its data before a store starts or a snapshot is taken, in GiB.
+# It is the figure kapelos doctor warns under. 0 is off.
+DEFAULT_DISK_RESERVE_GIB=20
 
 # Memory this machine can still hand out, in bytes. Linux says so directly. On macOS free, inactive and
 # speculative pages can all be handed out; that path was written without a Mac to try it on.
@@ -152,6 +155,65 @@ Stop one with kapelos down SITE, in the folder it runs from"
 Running now: $others"
 }
 
+# Where Docker keeps its images, volumes and snapshots, when this machine can see the folder. Docker Desktop
+# keeps it inside its own virtual machine, and there this answers nothing.
+docker_data_dir() {
+  local root
+  root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" || return 1
+  [[ -n $root && -d $root ]] || return 1
+  printf '%s' "$root"
+}
+
+# Bytes free on the filesystem a folder is on.
+free_bytes_in() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 { printf "%.0f\n", $4 * 1024; found = 1 } END { exit !found }'
+}
+
+disk_reserve_gib() {
+  local reserve="${KAPELOS_DISK_RESERVE_GIB:-$DEFAULT_DISK_RESERVE_GIB}"
+  [[ $reserve =~ ^[0-9]{1,6}$ ]] || die "KAPELOS_DISK_RESERVE_GIB is $reserve, and it takes the whole GiB of disk to keep free where Docker keeps its data, 0 for no reserve"
+  printf '%s' "$reserve"
+}
+
+# A store's database, search index and snapshots all live where Docker keeps its data, and a stopped store keeps
+# what it has, so this is asked of every start, the first one too. Where that folder can't be read it asks
+# nothing and says nothing: kapelos doctor is where that is said.
+require_disk_room_to_start() {
+  local site="${1#kapelos-}" reserve root free
+  reserve="$(disk_reserve_gib)" || exit 1
+  [[ $reserve -gt 0 ]] || return 0
+  root="$(docker_data_dir)" || return 0
+  free="$(free_bytes_in "$root")" || return 0
+  [[ $free -ge $((reserve * GIB_BYTES)) ]] ||
+    die "starting $site needs room where Docker keeps its data ($root): $(gib "$free") GiB is free there, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
+kapelos snapshot lists this site's snapshots, and docker system df shows what else is there"
+}
+
+# The bytes a volume holds, measured the way a snapshot copies it.
+volume_bytes() {
+  docker run --rm -v "$1:/from:ro" alpine du -sk /from 2>/dev/null | awk '{ printf "%.0f\n", $1 * 1024; found = 1 } END { exit !found }'
+}
+
+# A snapshot is a second copy of the database, the search index and the queue, so it is refused when that copy
+# would eat into the reserve.
+require_disk_room_for_snapshot() {
+  local site="${COMPOSE_PROJECT_NAME#kapelos-}" reserve root free volume bytes need=0
+  reserve="$(disk_reserve_gib)" || exit 1
+  [[ $reserve -gt 0 ]] || return 0
+  root="$(docker_data_dir)" || return 0
+  free="$(free_bytes_in "$root")" || return 0
+  for volume in $SNAPSHOT_VOLUMES; do
+    if ! bytes="$(volume_bytes "${COMPOSE_PROJECT_NAME}_$volume")"; then
+      echo "kapelos: can't measure $volume, so the disk reserve isn't checked for this snapshot" >&2
+      return 0
+    fi
+    need=$((need + bytes))
+  done
+  [[ $((free - need)) -ge $((reserve * GIB_BYTES)) ]] ||
+    die "a snapshot of $site copies $(gib "$need") GiB, which would leave $(gib $((free - need))) GiB free where Docker keeps its data ($root): $(gib "$free") GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
+kapelos snapshot delete NAME removes an old one"
+}
+
 # A site can't start beside a running site of this folder that publishes one of the same ports.
 require_ports_free() {
   local current="$1" project file key mine theirs
@@ -189,6 +251,7 @@ cmd_up() {
   if ! running_projects | grep -qx "$current"; then
     require_ports_free "$current"
     require_room_for_another "$current"
+    require_disk_room_to_start "$current"
   fi
   require_room_on_daemon "$current"
 
@@ -316,6 +379,7 @@ cmd_snapshot() {
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot save NAME"
       valid_snapshot_name "$name"
       [[ -z $(snapshot_names | grep -x "$name" || true) ]] || die "there's already a snapshot called $name. kapelos snapshot delete $name removes it"
+      require_disk_room_for_snapshot
       step "Pausing the database, search and queue so the copy is consistent"
       compose stop db opensearch rabbitmq
       created="$(date '+%Y-%m-%d %H:%M')"

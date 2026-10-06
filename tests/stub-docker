@@ -2,7 +2,8 @@
 # A stand-in for docker that answers from files in $STUB_DOCKER, logs every call, and starts nothing.
 # containers holds id|project|folder|memory|state lines, with an optional sixth field for the bytes in use that
 # docker stats reports; volumes holds name|project|snapshot-project lines,
-# and compose-config is what docker compose config prints.
+# and compose-config is what docker compose config prints. data-root, when it is there, holds the folder
+# docker info names as Docker's own, and volume-kib holds name|KiB lines for what du finds in a volume.
 set -euo pipefail
 
 printf '%s\n' "$*" >>"$STUB_DOCKER/calls"
@@ -99,7 +100,36 @@ stub_volume_ls() {
   done <"$volumes"
 }
 
+# docker info --format '{{.DockerRootDir}}': the folder in data-root, or a failure, as where Docker can't be asked.
+stub_info() {
+  [[ ${1:-} == --format && ${2:-} == *DockerRootDir* ]] || unexpected info "$@"
+  [[ -f $STUB_DOCKER/data-root ]] || exit 1
+  cat "$STUB_DOCKER/data-root"
+}
+
+# docker run --rm -v NAME:/from:ro alpine du -sk /from: the volume's line in volume-kib, as du prints it.
+stub_run() {
+  local name kib want
+  [[ ${1:-} == --rm && ${2:-} == -v && ${4:-} == alpine && ${5:-} == du ]] || unexpected run "$@"
+  want="${3%%:*}"
+  while IFS='|' read -r name kib; do
+    if [[ $name == "$want" ]]; then
+      printf '%s\t/from\n' "$kib"
+      return 0
+    fi
+  done <"$STUB_DOCKER/volume-kib"
+  exit 1
+}
+
 case "${1:-}" in
+  info)
+    shift
+    stub_info "$@"
+    ;;
+  run)
+    shift
+    stub_run "$@"
+    ;;
   ps)
     shift
     stub_ps "$@"

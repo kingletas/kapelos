@@ -203,6 +203,7 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `OPENSEARCH_PORT`, `RABBITMQ_UI_PORT`, `MAIL_UI_PORT` | `9200`, `15672`, `8025` | OpenSearch, RabbitMQ's management page and Mailpit, on your machine. `env --slot` moves every port at once; see [Two stores on one machine](#two-stores-on-one-machine) |
 | `KAPELOS_MAX_RUNNING`, `KAPELOS_MEM_BUDGET_GIB` | *(none)* | Limits across every Kapelos folder on one Docker. See [Two stores on one machine](#two-stores-on-one-machine) |
 | `KAPELOS_RESERVE_GIB`, `KAPELOS_MAX_LOAD` | `8`, three quarters of the cores | The memory another store must leave free, and the five-minute load it must start under; 0 turns either off. See [Several stores at once](#several-stores-at-once) |
+| `KAPELOS_DISK_RESERVE_GIB` | `20` | The disk that must stay free where Docker keeps its data before a store starts or a snapshot is taken; 0 turns it off. See [Several stores at once](#several-stores-at-once) |
 | `KAPELOS_HEAVY_AT_ONCE`, `KAPELOS_HEAVY_WAIT` | `1`, `3600` | How many heavy jobs run at once across the machine, and how many seconds one waits for its turn. See [Heavy work takes turns](#heavy-work-takes-turns) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
@@ -237,7 +238,7 @@ bin/kapelos sites             # lists them, with a * on the active one
 
 ## Several stores at once
 
-Sites from one folder run side by side. `use` only chooses which site plain commands act on, and nothing stops when you switch. Two things decide whether another store may start.
+Sites from one folder run side by side. `use` only chooses which site plain commands act on, and nothing stops when you switch. Three things decide whether a store may start.
 
 **Room.** A first store always starts. Another starts only if, after the memory it used when it last ran, 8 GiB of the machine's memory stays free, and the machine's load over the last five minutes is under three quarters of its cores. Otherwise `up` refuses, with the numbers:
 
@@ -248,6 +249,15 @@ Stop one with kapelos down SITE, in the folder it runs from
 ```
 
 A site's memory is measured when `kapelos sites` runs while it's up, and when `kapelos down` stops it. One never measured counts as 6 GiB. `KAPELOS_RESERVE_GIB` sets the memory to keep free and `KAPELOS_MAX_LOAD` the load, and 0 turns either off. Both defaults are a starting point, not a measurement of any one machine. On a Mac the free memory comes from `vm_stat` and the load from `sysctl`, a path that hasn't been run on one yet.
+
+**Disk.** A store's database, search index and snapshots all live where Docker keeps its data, and a stopped store keeps what it has. So every start, the first one too, needs 20 GiB free there, and a snapshot is refused when its copy would leave less:
+
+```text
+kapelos: a snapshot of acme copies 31.0 GiB, which would leave 9.0 GiB free where Docker keeps its data (/var/lib/docker): 40.0 GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps 20 GiB free.
+kapelos snapshot delete NAME removes an old one
+```
+
+`KAPELOS_DISK_RESERVE_GIB` sets the amount, and 0 turns it off. The check sees a store start and a snapshot being taken, not a running store filling its database, so the reserve is what gives you time to notice. Docker Desktop keeps its data inside its own virtual machine, where Kapelos can't read the space left: there the check asks nothing, and `kapelos doctor` says so.
 
 **Ports.** Each site of a folder has its own block of ports. `kapelos env SITE` gives a new site the first block no other site here uses, and `--slot N` picks one; the table in [Two stores on one machine](#two-stores-on-one-machine) lists them. A site made before blocks, on the default ports, moves with `kapelos site ports SITE`, which prints the commands that change the address in its store's database. `up` refuses a site whose ports a running site publishes, and names both. `kapelos info` shows the site's block.
 
