@@ -7,7 +7,8 @@
 
     Every configurable has twelve variants and every bundle twelve selections, each a simple product of
     its own, so the store holds about 130000 simple products at this step.
-    Unlike Magento's own profiles, this one changes no setting of the admin's security.
+    Unlike Magento's own profiles, this one changes no setting of the store: it has no configs
+    block, and the generator fails on one that holds a single setting.
 -->
 <config xmlns:xi="http://www.w3.org/2001/XInclude">
     <profile>
@@ -61,14 +62,6 @@
         <order_configurable_product_count_from>0</order_configurable_product_count_from>
         <order_configurable_product_count_to>2</order_configurable_product_count_to>
         <orders>25000</orders>
-        <configs>
-            <config>
-                <path>carriers/flatrate/active</path>
-                <scope>default</scope>
-                <scopeId>0</scopeId>
-                <value>1</value>
-            </config>
-        </configs>
         <xi:include href="../../setup/performance-toolkit/config/searchTermsLarge.xml" />
         <xi:include href="../../setup/performance-toolkit/config/attributeSets.xml" />
         <xi:include href="../../setup/performance-toolkit/config/searchConfig.xml" />

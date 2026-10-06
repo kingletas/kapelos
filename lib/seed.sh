@@ -51,10 +51,11 @@ seed_profile_put() {
 seed_list() {
   local file names
   echo "Kapelos's own, each a step toward the last:"
+  # Smallest first: by the number of configurables each one's heading names.
   for file in "$KAPELOS_HOME"/share/seed/*.xml; do
     [[ -f $file ]] || continue
     printf '  %-14s %s\n' "$(basename "$file" .xml)" "$(sed -n 's/^.*<!-- kapelos: \(.*\) -->.*$/\1/p' "$file" | sed -n 1p)"
-  done
+  done | sort -n -k 2
   load_env
   if compose ps --status running --services 2>/dev/null | holds -qx php; then
     names="$(magento_seed_profiles | tr '\n' ' ')"

@@ -179,6 +179,7 @@ check "nor reading the record" bash -c "! (. '$A/lib/queue.sh'; heavy_command se
 for profile in "$ROOT"/share/seed/*.xml; do
   name="$(basename "$profile" .xml)"
   check "$name names the generator's stand-ins for mail, from where seed puts it" grep -qF "<di>../../setup/performance-toolkit/config/di.xml</di>" "$profile"
+  check "$name changes no setting of the store, which also spares it the generator's failure on a single one" lacks "<configs>" "$profile"
   check "$name includes Magento's six shared files from there" test "$(grep -c '<xi:include href="../../setup/performance-toolkit/config/[A-Za-z]*.xml" />' "$profile")" -eq 6
 done
 
