@@ -43,9 +43,33 @@ magento_seed_profile_path() {
   return 1
 }
 
-# Copies a profile Kapelos ships into the store, since the generator runs in the container.
+# Prints the settings of a profile to leave out of a seed, as name|name: what the generator makes again
+# whatever the store holds. It replaces every tax rate and can't while a tax rule uses one, so both tax
+# settings go when the store has any tax rule; and it adds its price rules on every run, so each kind goes
+# when the store has the generator's own already. Products, customers, coupons and orders it only tops up.
+seed_settings_to_leave_out() {
+  local db="${DB_NAME:-magento}" prefix counts tax catalog cart out=""
+  prefix="$(table_prefix)"
+  counts="$(db_root -N -e "SELECT
+    (SELECT COUNT(*) FROM \`$db\`.\`${prefix}tax_calculation_rule\`),
+    (SELECT COUNT(*) FROM \`$db\`.\`${prefix}catalogrule\` WHERE name LIKE 'Catalog Price Rule %'),
+    (SELECT COUNT(*) FROM \`$db\`.\`${prefix}salesrule\` WHERE name LIKE 'Cart Price Rule %')" </dev/null)" || return 1
+  read -r tax catalog cart <<<"$counts"
+  [[ ${tax:-0} == 0 ]] || out="tax_rates_file|tax_rules"
+  [[ ${catalog:-0} == 0 ]] || out="${out:+$out|}catalog_price_rules"
+  [[ ${cart:-0} == 0 ]] || out="${out:+$out|}cart_price_rules|cart_price_rules_floor"
+  printf '%s' "$out"
+}
+
+# Copies a profile Kapelos ships into the store, since the generator runs in the container, without the
+# settings named in LEAVE_OUT.
 seed_profile_put() {
-  exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$1" <"$KAPELOS_HOME/share/seed/$1.xml"
+  local file="$KAPELOS_HOME/share/seed/$1.xml" leave_out="${2:-}"
+  if [[ -n $leave_out ]]; then
+    grep -v -E "<($leave_out)>" "$file" | exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$1"
+  else
+    exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$1" <"$file"
+  fi
 }
 
 seed_list() {
@@ -192,7 +216,7 @@ seed_failed() {
 # Generates, reindexes, records and snapshots. The generator adds only what the store lacks to reach the
 # profile's numbers, so a store grows by seeding a larger profile over a smaller one.
 seed_run() {
-  local profile="$1" snapshot=yes empty_carts=no keep path generate_s reindex_s carts
+  local profile="$1" snapshot=yes empty_carts=no keep path generate_s reindex_s carts leave_out=""
   shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -233,7 +257,12 @@ seed_run() {
     db_root -e "DELETE $(seed_carts_in_the_way_where)" </dev/null
   fi
   # Put there last, so a refusal above leaves nothing of the seed in the store.
-  ! seed_profile_is_ours "$profile" || seed_profile_put "$profile"
+  if seed_profile_is_ours "$profile"; then
+    leave_out="$(seed_settings_to_leave_out)" || die "can't count this store's tax and price rules, so can't tell what the generator would make a second time"
+    [[ -z $leave_out ]] ||
+      echo "Left out of this seed, since the store has them already and the generator would replace or repeat them: ${leave_out//|/, }"
+    seed_profile_put "$profile" "$leave_out"
+  fi
 
   step "Generating $profile with Magento's own generator. A large profile takes hours"
   SECONDS=0

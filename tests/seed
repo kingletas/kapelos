@@ -125,6 +125,7 @@ db_root() {
   case "\$*" in
     *"SELECT COUNT(*) FROM "*"quote"*" WHERE entity_id > "*) echo "\${STUB_CARTS:-0}" ;;
     *"DELETE FROM "*"quote"*" WHERE entity_id > "*) echo "carts deleted" >>"\$LOG" ;;
+    *"tax_calculation_rule"*) printf '%s\n' "\${STUB_RULES:-0	0	0}" ;;
     *) printf '26000\t1000\t1000\t100\t2000\t5000\n' ;;
   esac
 }
@@ -223,7 +224,13 @@ check "with its heading" grep -q "^when " <<<"$out"
 
 : >"$LOG"
 before="$(grep -c "snapshot-before-seed-" "$STUB_DOCKER/volumes")"
-run_on shop cmd_seed mixed-25 >/dev/null
+out="$(STUB_RULES="10	20	20" run_on shop cmd_seed mixed-25)"
+check "a store with tax rules is seeded without the tax rates, which the generator replaces and can't" lacks "<tax_rates_file>" "$IN_STORE"
+check "or the tax rules" lacks "<tax_rules>" "$IN_STORE"
+check "and without the price rules the generator would add a second time" lacks "_price_rules" "$IN_STORE"
+check "everything else of the profile is there" test "$(($(grep -c . "$ROOT/share/seed/mixed-25.xml") - $(grep -c . "$IN_STORE")))" -eq 5
+check "it is still a profile the generator can read" grep -q "<orders>12500</orders>" "$IN_STORE"
+check "and it says what was left out" grep -q "^Left out of this seed, since the store has them already and the generator would replace or repeat them: tax_rates_file, tax_rules, catalog_price_rules, cart_price_rules, cart_price_rules_floor$" <<<"$out"
 check "a store that has a snapshot gets no second way back" test "$(grep -c "snapshot-before-seed-" "$STUB_DOCKER/volumes")" -eq "$before"
 check "a larger profile is seeded over the smaller one" grep -q "generate-fixtures --skip-reindex var/kapelos-seed/mixed-25.xml$" "$LOG"
 check "and adds its own line to the record" test "$(cut -f 2 "$RECORD" | tr '\n' ' ')" = "profile mixed-10 mixed-25 "
