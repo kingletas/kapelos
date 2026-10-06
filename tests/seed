@@ -181,6 +181,8 @@ for profile in "$ROOT"/share/seed/*.xml; do
   name="$(basename "$profile" .xml)"
   check "$name names the generator's stand-ins for mail, from where seed puts it" grep -qF "<di>../../setup/performance-toolkit/config/di.xml</di>" "$profile"
   check "$name changes no setting of the store, which also spares it the generator's failure on a single one" lacks "<configs>" "$profile"
+  check "$name holds each setting a grown store is seeded without on one line, since they are left out by the line" \
+    test -z "$(grep -E '<(tax_rates_file|tax_rules|catalog_price_rules|cart_price_rules|cart_price_rules_floor)>' "$profile" | grep -v -E '^ *<([a-z_]+)>[^<]*</[a-z_]+> *$')"
   check "$name includes Magento's six shared files from there" test "$(grep -c '<xi:include href="../../setup/performance-toolkit/config/[A-Za-z]*.xml" />' "$profile")" -eq 6
 done
 
@@ -324,8 +326,21 @@ check "after the way back is saved" test "${saved_before:-999}" -lt "${deleted:-
 check "and before generating" test "${deleted:-999}" -lt "${generated:-0}"
 reset_docker
 saved_snapshot shop clean "2026-01-05 09:00:00"
-run_on shop cmd_seed mixed-10 --empty-carts >/dev/null
+out="$(STUB_CARTS=3 run_on shop cmd_seed mixed-10 --empty-carts)"
+deleted="$(grep -n "^carts deleted$" "$LOG" | cut -d: -f1)"
+saved_before="$(grep -n "^up etc/sites/shop.env$" "$LOG" | sed -n 1p | cut -d: -f1)"
+check "a store that has an old snapshot still gets a new one before its carts are deleted" grep -q "^Saved before-seed-carts-[0-9]\{8\}-[0-9]\{6\}\." <<<"$out"
+check "saved before the carts go" test "${saved_before:-999}" -lt "${deleted:-0}"
+check "and named as the way back" grep -q "^The way back from this seed is the snapshot before-seed-carts-" <<<"$out"
+reset_docker
+check "--empty-carts with --no-snapshot is refused, since the carts would be in no snapshot" refused "they would be in no snapshot and gone for good" \
+  env STUB_CARTS=3 KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10 --empty-carts --no-snapshot
+check "and deletes nothing" lacks "carts deleted" "$LOG"
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+out="$(run_on shop cmd_seed mixed-10 --empty-carts)"
 check "with no cart in the way it deletes nothing" lacks "carts deleted" "$LOG"
+check "and saves no snapshot for carts" lacks "before-seed-carts" <<<"$out"
 
 # --- putting a seed back ------------------------------------------------------------
 

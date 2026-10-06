@@ -243,13 +243,20 @@ seed_run() {
   fi
   carts="$(db_root -N -e "SELECT COUNT(*) $(seed_carts_in_the_way_where)" </dev/null)" || die "can't count this store's carts, so can't tell whether the generator's orders would fit"
   [[ $carts == 0 || $empty_carts == yes ]] ||
-    die "this store has $carts shopping carts numbered above its last order, and the generator gives each order's cart the order's own number, so it would stop at its first order. --empty-carts deletes those carts after the way back is saved: kapelos seed $profile --empty-carts"
+    die "this store has $carts shopping carts numbered above its last order, and the generator gives each order's cart the order's own number, so it would stop at its first order. --empty-carts saves a snapshot that holds them and then deletes them: kapelos seed $profile --empty-carts"
+  [[ $carts == 0 || $snapshot == yes ]] ||
+    die "--empty-carts would delete $carts shopping carts, and with --no-snapshot they would be in no snapshot and gone for good. Leave --no-snapshot out"
   if [[ $snapshot == yes ]]; then
     # Both asked before the hours of generating, not after them.
     require_helper_starts
     require_disk_room_for_snapshot
     # A store with no snapshot at all has no way back from a seed, so it gets one first.
-    [[ -n $(snapshot_names) ]] || cmd_snapshot save before-seed
+    if [[ -z $(snapshot_names) ]]; then
+      cmd_snapshot save before-seed
+    elif [[ $carts != 0 ]]; then
+      # However many snapshots the store has, the carts about to be deleted are in none of them yet.
+      cmd_snapshot save --series before-seed-carts --keep 1
+    fi
   fi
   seed_way_back
   if [[ $carts != 0 ]]; then
