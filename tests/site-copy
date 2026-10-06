@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# A second store from a first: site copy makes one from a site's code and a snapshot and never changes the
+# site it copies; a series of snapshots keeps its newest few; restore --latest puts the newest back; deploy
+# saves one behind the maintenance page when the site asks; and saving, restoring and copying take a turn at
+# heavy work. Offline: docker is tests/stub-docker, and the steps that need a running store are stood in for.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+GIB=1073741824
+
+mkdir -p "$SCRATCH/bin"
+cp "$ROOT/tests/stub-docker" "$SCRATCH/bin/docker"
+export PATH="$SCRATCH/bin:$PATH"
+export STUB_DOCKER="$SCRATCH/docker"
+export KAPELOS_MEMINFO="$SCRATCH/meminfo" KAPELOS_LOADAVG="$SCRATCH/loadavg"
+export LOG="$SCRATCH/log"
+unset KAPELOS_RESERVE_GIB KAPELOS_MAX_LOAD KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB KAPELOS_DISK_RESERVE_GIB KAPELOS_ENV
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+# The reverse of grep -q: passes when no line matches.
+lacks() {
+  ! grep -q -- "$@"
+}
+
+reset_docker() {
+  rm -rf "$STUB_DOCKER"
+  mkdir -p "$STUB_DOCKER"
+  : >"$STUB_DOCKER/containers"
+  : >"$STUB_DOCKER/volumes"
+  : >"$STUB_DOCKER/calls"
+  : >"$STUB_DOCKER/compose-config"
+  : >"$LOG"
+}
+
+machine() {
+  printf 'MemAvailable: %s kB\n' $(($1 * 1024 * 1024)) >"$KAPELOS_MEMINFO"
+  echo "0.00 $2 0.00 1/100 1" >"$KAPELOS_LOADAVG"
+}
+
+# A snapshot of a site as the stub keeps it: three volumes, each carrying its name and when it was saved.
+snapshot() {
+  local site="$1" name="$2" created="$3" volume
+  for volume in db-data opensearch-data rabbitmq-data; do
+    echo "kapelos-${site}_snapshot-$name-$volume||kapelos-$site|$name|$created" >>"$STUB_DOCKER/volumes"
+  done
+}
+
+running() {
+  echo "$1|kapelos-$2|$A|$((8 * GIB))|running|$3" >>"$STUB_DOCKER/containers"
+}
+
+reset_docker
+machine 64 0.00
+A="$SCRATCH/a"
+STORE="$SCRATCH/store"
+mkdir -p "$A" "$STORE/app/etc" "$STORE/.kapelos"
+echo "<?php return ['invented' => true];" >"$STORE/app/etc/env.php"
+echo "MARIADB_VERSION=11.4" >"$STORE/.kapelos/settings.env"
+cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/.env.example" "$ROOT/compose.yaml" "$A/"
+A="$(cd -P "$A" && pwd)"
+kapelos() { (cd "$A" && bin/kapelos "$@"); }
+kapelos env shop >/dev/null
+sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$STORE|" "$A/etc/sites/shop.env"
+rm -f "$A/etc/sites/shop.env.bak"
+
+# One Kapelos function in a process of its own, as bin/kapelos runs it, with the steps that need a running
+# store writing a line in $LOG instead. KAPELOS_ENV names the site, as it does for the real command.
+cat >"$SCRATCH/run" <<EOF
+set -euo pipefail
+cd "$A"
+KAPELOS_HOME="$A"
+ENV_FILE="\${KAPELOS_ENV:-.env}"
+SITES_DIR=etc/sites
+STORES_DIR=var/stores
+SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
+PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
+PORT_SLOT_STRIDE=100
+PROJECT_KEYS="MARIADB_VERSION"
+. lib/core.sh
+. lib/queue.sh
+. lib/sites.sh
+. lib/stack.sh
+. lib/scale.sh
+cmd_up() { echo "up \$ENV_FILE" >>"\$LOG"; }
+require_running() { :; }
+clear_cache_files() { echo "cache files" >>"\$LOG"; }
+compose_exec() { echo "exec \$*" >>"\$LOG"; }
+exec_php() { echo "php \$*" >>"\$LOG"; }
+exec_php_no_xdebug() { echo "php \$*" >>"\$LOG"; }
+config_table() { printf 'core_config_data'; }
+db_root() { echo "sql \$*" >>"\$LOG"; }
+manipulus_in_use() { return 1; }
+magento_on_every_server() { echo "magento \$*" >>"\$LOG"; }
+magento() {
+  echo "magento \$*" >>"\$LOG"
+  [[ \$1 != "\${STUB_MAGENTO_FAILS:-}" ]]
+}
+"\$@"
+EOF
+
+run_on() {
+  local site="$1"
+  shift
+  KAPELOS_ENV="etc/sites/$site.env" bash "$SCRATCH/run" "$@"
+}
+
+# --- heavy work --------------------------------------------------------------
+
+heavy() {
+  bash -c ". '$A/lib/queue.sh'; heavy_command \"\$@\"" heavy "$@"
+}
+check "saving a snapshot takes a turn at heavy work" heavy snapshot save
+check "and so does restoring one" heavy snapshot restore
+check "and copying a site" heavy site copy
+check "listing snapshots doesn't" bash -c "! (. '$A/lib/queue.sh'; heavy_command snapshot)"
+check "nor deleting one" bash -c "! (. '$A/lib/queue.sh'; heavy_command snapshot delete)"
+check "nor moving a site's ports" bash -c "! (. '$A/lib/queue.sh'; heavy_command site ports)"
+
+# --- a series of snapshots ----------------------------------------------------
+
+snapshot shop clean "2026-01-05 09:00"
+snapshot shop deploy-20260110-020000 "2026-01-10 02:00:00"
+snapshot shop deploy-20260111-020000 "2026-01-11 02:00:00"
+snapshot shop nightly-20260109-230000 "2026-01-09 23:00:00"
+
+out="$(run_on shop cmd_snapshot)"
+check "the list shows each snapshot with when it was saved" grep -qE '^  deploy-20260111-020000 +2026-01-11 02:00:00$' <<<"$out"
+
+out="$(run_on shop cmd_snapshot save --series deploy --keep 2)"
+new="$(sed -n 's/^Saved \(deploy-[0-9]\{8\}-[0-9]\{6\}\)\..*/\1/p' <<<"$out")"
+check "a save in a series is named by the series and the time" test -n "$new"
+check "its three volumes are made" test "$(grep -c "^kapelos-shop_snapshot-$new-" "$STUB_DOCKER/volumes")" -eq 3
+check "the series keeps its newest two, the new one among them" grep -q "^kapelos-shop_snapshot-deploy-20260111-020000-db-data|" "$STUB_DOCKER/volumes"
+check "the oldest of the series goes" lacks "deploy-20260110-020000" "$STUB_DOCKER/volumes"
+check "and it says which one went" grep -q "Deleted deploy-20260110-020000: deploy keeps its newest 2." <<<"$out"
+check "a snapshot saved under a name is never pruned" grep -q "^kapelos-shop_snapshot-clean-db-data|" "$STUB_DOCKER/volumes"
+check "nor one of another series" grep -q "^kapelos-shop_snapshot-nightly-20260109-230000-db-data|" "$STUB_DOCKER/volumes"
+check "the store is started again before anything is pruned" grep -qx "up etc/sites/shop.env" "$LOG"
+
+refused() {
+  local expect="$1" out
+  shift
+  out="$("$@" 2>&1)" && return 1
+  grep -qF -- "$expect" <<<"$out"
+}
+check "--keep 0 is refused" refused "--keep takes how many snapshots of the series to keep, 1 to 99, and got: 0" run_on shop cmd_snapshot save --series deploy --keep 0
+check "--keep without a series is refused" refused "--keep goes with --series" run_on shop cmd_snapshot save clean2 --keep 2
+check "a name and a series together are refused" refused "under a name or in a series, not both" run_on shop cmd_snapshot save clean2 --series deploy
+check "--latest with save is refused" refused "--latest goes with restore" run_on shop cmd_snapshot save clean2 --latest
+check "--series with restore is refused" refused "--series and --keep go with save" run_on shop cmd_snapshot restore --series deploy -y
+check "an option it doesn't know is refused" refused "snapshot doesn't know --newest" run_on shop cmd_snapshot restore --newest
+
+sed -i.bak '/^SNAPSHOT_KEEP=/d' "$A/etc/sites/shop.env"
+echo "SNAPSHOT_KEEP=1" >>"$A/etc/sites/shop.env"
+snapshot shop weekly-20260101-000000 "2026-01-01 00:00:00"
+run_on shop cmd_snapshot save --series weekly >/dev/null
+check "SNAPSHOT_KEEP in the site's settings is how many a series keeps when --keep isn't given" \
+  test "$(cut -d'|' -f4 "$STUB_DOCKER/volumes" | grep -c '^weekly-' || true)" -eq 3
+check "and the older one went" lacks "weekly-20260101-000000" "$STUB_DOCKER/volumes"
+sed -i.bak '/^SNAPSHOT_KEEP=/d' "$A/etc/sites/shop.env"
+rm -f "$A/etc/sites/shop.env.bak"
+
+# --- restore --latest ---------------------------------------------------------
+
+reset_docker
+snapshot shop clean "2026-01-05 09:00"
+snapshot shop zebra "2026-01-03 09:00"
+snapshot shop deploy-20260111-020000 "2026-01-11 02:00:00"
+run_on shop cmd_snapshot restore --latest -y >/dev/null
+check "restore --latest puts back the one saved last, whatever the names sort as" \
+  grep -q -- "-v kapelos-shop_snapshot-deploy-20260111-020000-db-data:/from:ro -v kapelos-shop_db-data:/to" "$STUB_DOCKER/calls"
+check "and no other" lacks "snapshot-zebra-db-data:/from:ro" "$STUB_DOCKER/calls"
+check "restore --latest with a name is refused" refused "a name or --latest, not both" run_on shop cmd_snapshot restore clean --latest -y
+reset_docker
+check "restore --latest with no snapshot is refused" refused "there's no snapshot to restore" run_on shop cmd_snapshot restore --latest -y
+
+# --- the caches, emptied in an order that still works after a restore --------------
+
+: >"$LOG"
+run_on shop cmd_cache_reset >/dev/null
+check "Valkey is emptied before Magento is asked to flush" \
+  test "$(grep -n 'valkey-cli FLUSHALL' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'magento cache:flush' "$LOG" | cut -d: -f1)"
+
+# --- a snapshot before a deploy ----------------------------------------------------
+
+reset_docker
+run_on shop cmd_deploy >/dev/null
+check "a deploy takes no snapshot unless the site asks for one" lacks "volume create" "$STUB_DOCKER/calls"
+
+echo "SNAPSHOT_BEFORE_DEPLOY=2" >>"$A/etc/sites/shop.env"
+reset_docker
+snapshot shop deploy-20260110-020000 "2026-01-10 02:00:00"
+snapshot shop deploy-20260111-020000 "2026-01-11 02:00:00"
+run_on shop cmd_deploy >/dev/null
+check "a site that sets SNAPSHOT_BEFORE_DEPLOY gets a snapshot in the deploy series" \
+  test "$(cut -d'|' -f4 "$STUB_DOCKER/volumes" | grep -c '^deploy-' || true)" -eq 6
+check "keeping that many, so the oldest went" lacks "deploy-20260110-020000" "$STUB_DOCKER/volumes"
+check "it is taken behind the maintenance page" \
+  test "$(grep -n 'magento maintenance:enable' "$LOG" | cut -d: -f1)" -lt "$(grep -n '^up ' "$LOG" | cut -d: -f1)"
+check "and before the code changes" \
+  test "$(grep -n '^up ' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'php composer install' "$LOG" | cut -d: -f1)"
+
+reset_docker
+out="$(STUB_MAGENTO_FAILS=setup:upgrade run_on shop cmd_deploy 2>&1)" && status=0 || status=$?
+taken="$(cut -d'|' -f4 "$STUB_DOCKER/volumes" | sort -u | head -n 1)"
+check "a deploy that stops after its snapshot fails" test "$status" -ne 0
+check "and names the snapshot to go back to" grep -q "kapelos snapshot restore $taken puts them back" <<<"$out"
+
+printf '%s' "$SCRATCH/docker-data" >"$STUB_DOCKER/data-root"
+mkdir -p "$SCRATCH/docker-data"
+cat >"$SCRATCH/bin/df" <<'EOF'
+#!/usr/bin/env bash
+echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
+echo "stub 0 0 $(cat "$STUB_DF") 0% /"
+EOF
+chmod +x "$SCRATCH/bin/df"
+export STUB_DF="$SCRATCH/disk-free-kib"
+echo $((25 * 1024 * 1024)) >"$STUB_DF"
+printf '%s\n' "kapelos-shop_db-data|$((30 * 1024 * 1024))" "kapelos-shop_opensearch-data|$((1024 * 1024))" "kapelos-shop_rabbitmq-data|0" >"$STUB_DOCKER/volume-kib"
+: >"$LOG"
+# The deploy before this one saved a snapshot in this same second, and a series names its snapshots by the second.
+: >"$STUB_DOCKER/volumes"
+out="$(run_on shop cmd_deploy 2>&1)" && status=0 || status=$?
+check "a deploy whose snapshot has no room on the disk stops at that step" grep -q "stopped at: Saving a snapshot to go back to" <<<"$out"
+check "with the disk's refusal" grep -q "a snapshot of shop copies 31.0 GiB, more than the 25.0 GiB free" <<<"$out"
+check "and says the store is still in maintenance mode" grep -q "The store is still in maintenance mode." <<<"$out"
+check "before any code changed" lacks "composer install" "$LOG"
+rm -f "$SCRATCH/bin/df" "$STUB_DOCKER/data-root"
+
+for bad in -1 two 100; do
+  sed -i.bak "s/^SNAPSHOT_BEFORE_DEPLOY=.*/SNAPSHOT_BEFORE_DEPLOY=$bad/" "$A/etc/sites/shop.env"
+  check "SNAPSHOT_BEFORE_DEPLOY=$bad is refused" refused "SNAPSHOT_BEFORE_DEPLOY is $bad" run_on shop cmd_deploy
+done
+sed -i.bak '/^SNAPSHOT_BEFORE_DEPLOY=/d' "$A/etc/sites/shop.env"
+rm -f "$A/etc/sites/shop.env.bak"
+
+# --- site copy -----------------------------------------------------------------
+
+reset_docker
+machine 64 0.00
+check "a site with no snapshot can't be copied, and says how to take one" refused \
+  "shop has no snapshot to copy from. Take one first: kapelos use shop && kapelos snapshot save NAME" run_on shop cmd_site copy shop shop-scratch
+check "and nothing was written for the copy" test ! -e "$A/etc/sites/shop-scratch.env"
+
+snapshot shop clean "2026-01-05 09:00"
+snapshot shop deploy-20260111-020000 "2026-01-11 02:00:00"
+{
+  echo 'STORES="second.test=second_store"'
+  echo "DB_REPLICAS=1"
+  echo "CRON=yes"
+  echo "VARNISH_VCL=$STORE/var/varnish.vcl"
+  echo "KEPT_ELSEWHERE=$STORE-archive/notes.txt"
+} >>"$A/etc/sites/shop.env"
+before="$(cksum <"$A/etc/sites/shop.env")"
+out="$(run_on shop cmd_site copy shop shop-scratch 2>&1)"
+copy="$A/etc/sites/shop-scratch.env"
+value() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
+
+check "the copy is a site of its own" test "$(value "$copy" COMPOSE_PROJECT_NAME)" = kapelos-shop-scratch
+check "on its own hostname" test "$(value "$copy" APP_HOST)" = shop-scratch.test
+check "on the first block of ports no site here uses" test "$(value "$copy" HTTP_PORT)" = 8180
+check "every port of the block, not only the storefront's" test "$(value "$copy" DB_PORT)" = 13406
+check "its address carries its own name and port" test "$(value "$copy" MAGENTO_BASE_URL)" = "http://shop-scratch.test:8180/"
+check "its code is its own copy, in Kapelos's folder" test "$(value "$copy" MAGENTO_SRC)" = "$A/var/stores/shop-scratch"
+check "it keeps the passwords the copied database knows" test "$(value "$copy" DB_PASSWORD)" = "$(value "$A/etc/sites/shop.env" DB_PASSWORD)"
+check "its settings are readable only by you" test "$(find "$copy" -perm 600 | wc -l)" -eq 1
+check "it runs one web server and no replica, whatever the site it copies runs" test "$(value "$copy" DB_REPLICAS)$(value "$copy" WEB_SERVERS)" = 01
+check "the other storefronts' hostnames stay with the site it copies" test -z "$(value "$copy" STORES)"
+check "its scheduled jobs are off, though the site it copies runs them" test "$(value "$copy" CRON)" = no
+check "and it says so" grep -q "with its scheduled jobs off whatever shop's are" <<<"$out"
+check "a setting that names a file in the copied code names the copy's file" \
+  test "$(value "$copy" VARNISH_VCL)" = "$A/var/stores/shop-scratch/var/varnish.vcl"
+check "a folder whose name only starts like the code's is left alone" \
+  test "$(value "$copy" KEPT_ELSEWHERE)" = "$STORE-archive/notes.txt"
+check "the code is copied" test -f "$A/var/stores/shop-scratch/app/etc/env.php"
+check "hidden folders included" test -f "$A/var/stores/shop-scratch/.kapelos/settings.env"
+check "the site it copies keeps its code" test -f "$STORE/app/etc/env.php"
+check "and its settings, to the byte" test "$(cksum <"$A/etc/sites/shop.env")" = "$before"
+check "the copy's containers and volumes are made from its own settings" \
+  grep -q -- "--env-file etc/sites/shop-scratch.env --progress quiet create db opensearch rabbitmq" "$STUB_DOCKER/calls"
+for volume in db-data opensearch-data rabbitmq-data; do
+  check "$volume comes from the newest snapshot" \
+    grep -q -- "-v kapelos-shop_snapshot-deploy-20260111-020000-$volume:/from:ro -v kapelos-shop-scratch_$volume:/to" "$STUB_DOCKER/calls"
+done
+check "nothing is copied into the site it copies" lacks "-v kapelos-shop_[a-z-]*:/to" "$STUB_DOCKER/calls"
+check "and nothing of it is stopped" lacks "shop.env.* \(stop\|down\)" "$STUB_DOCKER/calls"
+check "the copy is started" grep -qx "up etc/sites/shop-scratch.env" "$LOG"
+check "its address is set in its own database" grep -q "sql magento .*SET value = 'http://shop-scratch.test:8180/'" <<<"$(tr '\n' ' ' <"$LOG")"
+check "a database that matches the code is left alone" lacks "setup:upgrade" "$LOG"
+check "it says where the copy is and how to remove it" grep -q "kapelos site remove shop-scratch" <<<"$out"
+check "a copy that finished doesn't say it stopped part way" lacks "stopped part way" <<<"$out"
+check "the active site is still the one it was" test ! -L "$A/.env"
+
+: >"$STUB_DOCKER/calls"
+run_on shop cmd_site copy shop shop-old --snapshot clean >/dev/null 2>&1
+check "--snapshot picks the one to copy" grep -q -- "-v kapelos-shop_snapshot-clean-db-data:/from:ro -v kapelos-shop-old_db-data:/to" "$STUB_DOCKER/calls"
+check "a second copy gets the next block of ports" test "$(value "$A/etc/sites/shop-old.env" HTTP_PORT)" = 8280
+
+: >"$LOG"
+STUB_MAGENTO_FAILS=setup:db:status run_on shop cmd_site copy shop shop-behind >/dev/null 2>&1
+check "a snapshot older than the code has its database upgraded, keeping the compiled code" grep -qx "magento setup:upgrade --keep-generated" "$LOG"
+
+check "a name already taken is refused" refused "there's already a site called shop-old" run_on shop cmd_site copy shop shop-old
+check "a site that isn't there can't be copied" refused "there's no site called nowhere" run_on shop cmd_site copy nowhere new
+check "a snapshot that isn't there is refused" refused "shop has no snapshot called missing" run_on shop cmd_site copy shop new --snapshot missing
+check "a slot another site has is refused" refused "slot 1 is shop-scratch's" run_on shop cmd_site copy shop new --slot 1
+check "a third name is refused" refused "got a third: extra" run_on shop cmd_site copy shop new extra
+check "one name alone is refused" refused "name the site to copy and the new one" run_on shop cmd_site copy shop
+check "none of those wrote anything" test ! -e "$A/etc/sites/new.env" -a ! -e "$A/var/stores/new"
+
+echo "KAPELOS_ENV_PHP=$A/var/sites/taken/env.php" >>"$A/etc/sites/shop-old.env"
+check "an adopted site isn't copied yet, and says so" refused "shop-old was adopted" run_on shop cmd_site copy shop-old new
+
+# A store that brings its own commands: copied only as last trusted, and the copy is trusted with it.
+mkdir -p "$STORE/.kapelos/commands"
+echo "echo hello" >"$STORE/.kapelos/commands/hello"
+check "a store whose own commands aren't trusted isn't copied" refused "kapelos trust $STORE" run_on shop cmd_site copy shop trusty
+run_on shop cmd_trust "$STORE" >/dev/null
+run_on shop cmd_site copy shop trusty >/dev/null 2>&1
+check "once trusted, its copy runs the same commands without asking again" \
+  bash -c "cd '$A' && KAPELOS_HOME='$A' && . lib/core.sh && project_is_trusted '$A/var/stores/trusty'"
+rm -rf "$STORE/.kapelos/commands"
+
+# The address of a copy follows the shape of the address it copies.
+sed -i.bak "s|^MAGENTO_BASE_URL=.*|MAGENTO_BASE_URL=https://shop.test:8443/|" "$A/etc/sites/shop.env"
+run_on shop cmd_site copy shop secure --slot 7 >/dev/null 2>&1
+check "an https store's copy is https on its own HTTPS port" test "$(value "$A/etc/sites/secure.env" MAGENTO_BASE_URL)" = "https://secure.test:9143/"
+sed -i.bak "s|^MAGENTO_BASE_URL=.*|MAGENTO_BASE_URL=http://shop.test/|" "$A/etc/sites/shop.env"
+run_on shop cmd_site copy shop proxied --slot 8 >/dev/null 2>&1
+check "a store behind the reverse proxy has no port in its address, and neither has its copy" test "$(value "$A/etc/sites/proxied.env" MAGENTO_BASE_URL)" = "http://proxied.test/"
+rm -f "$A/etc/sites/shop.env.bak"
+
+# A store Kapelos keeps in its own folder writes paths from that folder, and those follow the copy too.
+mkdir -p "$A/var/stores/inhouse/var"
+kapelos env inhouse >/dev/null
+sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$A/var/stores/inhouse|" "$A/etc/sites/inhouse.env"
+rm -f "$A/etc/sites/inhouse.env.bak"
+{
+  echo "VARNISH_VCL=./var/stores/inhouse/var/varnish.vcl"
+  echo 'NGINX_EXTRA="var/stores/inhouse/nginx.conf"'
+  echo "SIBLING=./var/stores/inhouse-two/var/varnish.vcl"
+} >>"$A/etc/sites/inhouse.env"
+snapshot inhouse clean "2026-01-05 09:00"
+run_on shop cmd_site copy inhouse inhouse-scratch >/dev/null 2>&1
+check "a path written from Kapelos's folder follows the copy" \
+  test "$(value "$A/etc/sites/inhouse-scratch.env" VARNISH_VCL)" = "./var/stores/inhouse-scratch/var/varnish.vcl"
+check "quoted or not, with or without the leading dot" \
+  test "$(value "$A/etc/sites/inhouse-scratch.env" NGINX_EXTRA)" = '"var/stores/inhouse-scratch/nginx.conf"'
+check "and a sibling folder's path does not" \
+  test "$(value "$A/etc/sites/inhouse-scratch.env" SIBLING)" = "./var/stores/inhouse-two/var/varnish.vcl"
+
+# Admitted like any other store, before anything large is copied.
+running s1 shop $((3 * GIB))
+mkdir -p "$A/var/sites/shop"
+echo $((3 * GIB)) >"$A/var/sites/shop/footprint"
+machine 12 0.00
+run_on shop cmd_site copy shop fits >/dev/null 2>&1
+check "a copy counts as what the site it copies used, and is admitted where that leaves the reserve" test -f "$A/var/stores/fits/app/etc/env.php"
+machine 10 0.00
+out="$(run_on shop cmd_site copy shop tight 2>&1)" && status=0 || status=$?
+check "a copy that would eat into the memory reserve is refused" test "$status" -ne 0
+check "with the numbers" grep -q "starting tight would leave 7.0 GiB of memory free: 10.0 GiB is free now, and it used 3.0 GiB when it last ran" <<<"$out"
+check "before its code is copied" test ! -e "$A/var/stores/tight"
+check "and it says how to remove what was made" grep -q "the copy stopped part way. kapelos site remove tight -y removes what was made of it" <<<"$out"
+
+machine 64 0.00
+out="$(kapelos site remove shop-scratch -y)"
+check "removing a copy deletes its code too" test ! -e "$A/var/stores/shop-scratch"
+check "and its settings" test ! -e "$A/etc/sites/shop-scratch.env"
+check "and leaves the site it was copied from" test -f "$A/etc/sites/shop.env" -a -f "$STORE/app/etc/env.php"
+
+echo
+if [[ $FAILURES -eq 0 ]]; then
+  echo "all passed"
+else
+  echo "$FAILURES failed"
+  exit 1
+fi

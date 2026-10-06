@@ -91,6 +91,9 @@ Sites, for more than one project
   site ports SITE [--slot N]
                          Move a stopped site to a block of ports of its own, the first free one
                          unless --slot says which, and print how to move its store's address
+  site copy SOURCE NEW [--snapshot NAME] [--slot N]
+                         A second store from SOURCE's code and one of its snapshots, the newest unless
+                         named, on its own ports. SOURCE keeps running and isn't changed
   site remove SITE [-y]  Delete a site's containers, database, snapshots and files; its code stays
 
 The stack
@@ -121,6 +124,10 @@ Working in the store
   db [dump [FILE]]       A MariaDB prompt on the store's database, or a gzipped dump of it
   snapshot [save|restore|delete] [NAME] [-y]
                          Save the database, search index and queue, and put them back in seconds
+  snapshot save --series PREFIX [--keep N]
+                         Save one named by the time, and keep only the newest N (3) of that series
+  snapshot restore --latest [-y]
+                         Put back the newest snapshot, whatever it is called
   valkey [cache|session] valkey-cli on the cache or the session instance
   varnish ARGS...        varnishadm in the Varnish container: kapelos varnish ban.list
   cache-reset            Empty every cache: Magento, Valkey and Varnish. Sessions are kept
@@ -161,7 +168,8 @@ Every command also runs through make: make up, make magento ARGS="cache:flush".
 A command with a colon is Magento's; Kapelos's own commands never have one.
 Set KAPELOS_ENV to use a settings file other than .env for one command.
 Heavy work takes turns across every Kapelos folder on the machine: starting or installing a store,
-composer changing the tree, setup:upgrade, a compile, a deploy and a reindex. KAPELOS_HEAVY_AT_ONCE
+composer changing the tree, setup:upgrade, a compile, a deploy, a reindex, saving or restoring a
+snapshot and copying a site. KAPELOS_HEAVY_AT_ONCE
 sets how many run at once (1), and KAPELOS_HEAVY_WAIT how many seconds one waits for its turn (3600).
 EOF
 }

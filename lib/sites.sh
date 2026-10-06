@@ -1,4 +1,4 @@
-# Sites: which project is active, what each one is called, and removing one.
+# Sites: which project is active, what each one is called, copying one and removing one.
 # shellcheck shell=bash
 
 cmd_env() {
@@ -130,10 +130,22 @@ first_free_slot() {
   printf '%s' "$slot"
 }
 
+# The site of this folder whose ports are in a slot, leaving out the site file SKIP; nothing when it is free.
+slot_owner() {
+  local slot="$1" skip="${2:-}" other
+  for other in "$SITES_DIR"/*.env; do
+    [[ -f $other && $other != "$skip" ]] || continue
+    if [[ $(slot_of_site "$other" || true) == "$slot" ]]; then
+      basename "$other" .env
+      return 0
+    fi
+  done
+}
+
 # Moves a site to a block of ports of its own: the slot named, or the first one no other site of this folder
 # uses. The store's own addresses in its database still carry the old port, so it prints what changes those.
 site_ports() {
-  local name="" slot="" file project other old_url new_url old_http new_http key
+  local name="" slot="" file project owner old_url new_url old_http new_http key
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --slot)
@@ -161,10 +173,8 @@ site_ports() {
   ! running_projects | grep -qx "$project" || die "$name is running, and its ports can't change under it. Stop it first: kapelos down $name"
   [[ -n $slot ]] || slot="$(first_free_slot "$file")"
   require_port_slot "$slot"
-  for other in "$SITES_DIR"/*.env; do
-    [[ -f $other && $other != "$file" ]] || continue
-    [[ $(slot_of_site "$other" || true) != "$slot" ]] || die "slot $slot is $(basename "$other" .env)'s. Leave out --slot and $name gets the first free one"
-  done
+  owner="$(slot_owner "$slot" "$file")"
+  [[ -z $owner ]] || die "slot $slot is $owner's. Leave out --slot and $name gets the first free one"
   old_url="$(env_value "$file" MAGENTO_BASE_URL)"
   old_http="$(env_value "$file" HTTP_PORT)"
   [[ -n $old_http ]] || old_http="$(env_value .env.example HTTP_PORT)"
@@ -357,7 +367,7 @@ cmd_stores() {
   cmd_cache_reset
 }
 
-# Removes a site: its containers, database, search index, snapshots and generated files. A store's code stays, unless Kapelos downloaded it.
+# Removes a site: its containers, database, search index, snapshots and generated files. A store's code stays, unless Kapelos downloaded or copied it.
 site_remove() {
   local name="" yes=no file project code volumes reply volume
   while [[ $# -gt 0 ]]; do
@@ -378,7 +388,7 @@ site_remove() {
   echo "  its containers, and these volumes: $(tr '\n' ' ' <<<"$volumes")"
   echo "  $file, $(site_state_dir_of "$project") and var/tools/$project"
   if [[ $code == "$KAPELOS_HOME/$STORES_DIR/"* ]]; then
-    echo "  $code, the code Kapelos downloaded for it"
+    echo "  $code, the code Kapelos downloaded or copied for it"
   else
     echo "Its code in $code stays where it is."
   fi
@@ -410,6 +420,194 @@ site_remove() {
   echo "Removed $name."
 }
 
+# Points a setting that names a file inside SOURCE's code, such as a store's own VCL, at the same file in the
+# copy's. Kapelos writes such a path whole or from its own folder, so both are followed; a folder whose name
+# only starts the same is left alone.
+site_copy_paths() {
+  local source_file="$1" file="$2" code="$3" target="$4" line key value new quote body rel_code rel_target
+  rel_code="${code#"$KAPELOS_HOME"/}"
+  rel_target="${target#"$KAPELOS_HOME"/}"
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == *=* ]] || continue
+    key="${line%%=*}"
+    [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ && $key != MAGENTO_SRC ]] || continue
+    value="${line#*=}"
+    new="${value//"$code/"/"$target/"}"
+    if [[ $rel_code != "$code" ]]; then
+      quote=""
+      case "$new" in \"* | \'*) quote="${new:0:1}" ;; esac
+      body="${new#"$quote"}"
+      case "$body" in
+        "./$rel_code/"*) new="$quote./$rel_target/${body#"./$rel_code/"}" ;;
+        "$rel_code/"*) new="$quote$rel_target/${body#"$rel_code/"}" ;;
+      esac
+    fi
+    [[ $new == "$value" ]] || set_env_value "$file" "$key" "$new"
+  done <"$source_file"
+}
+
+# NAME's settings: SOURCE's, passwords included, since the copied database and env.php already hold them, with
+# its own name, hostname, ports and code, on one web server with no replica, and with its scheduled jobs off.
+site_copy_settings() {
+  local source_file="$1" file="$2" name="$3" slot="$4" target="$5" key old_url scheme=http port=""
+  (umask 077 && cp "$source_file" "$file")
+  site_copy_paths "$source_file" "$file" "$(env_value "$source_file" MAGENTO_SRC)" "$target"
+  set_env_value "$file" COMPOSE_PROJECT_NAME "kapelos-$name"
+  set_env_value "$file" APP_HOST "$name.test"
+  set_env_value "$file" MAGENTO_SRC "$target"
+  for key in $PORT_KEYS; do
+    set_env_value "$file" "$key" "$(slot_port "$key" "$slot")"
+  done
+  set_env_value "$file" WEB_SERVERS 1
+  set_env_value "$file" DB_REPLICAS 0
+  # A copy would run SOURCE's scheduled jobs beside it, with the same settings and the same outside servers.
+  # kapelos cron on turns them on, and asks first for a store that isn't disposable.
+  set_env_value "$file" CRON no
+  # The hostnames of SOURCE's other storefronts are SOURCE's, so the copy serves its default store on its own.
+  for key in STORES PROXY_HOSTS; do
+    [[ -z $(env_value "$file" "$key") ]] || set_env_value "$file" "$key" ""
+  done
+  old_url="$(env_value "$source_file" MAGENTO_BASE_URL)"
+  [[ $old_url != https://* ]] || scheme=https
+  # A store reached through the reverse proxy has no port in its address, and its copy has none either.
+  if [[ $old_url =~ ^https?://[^/:]+:[0-9]+ ]]; then
+    if [[ $scheme == https ]]; then port=":$(slot_port HTTPS_PORT "$slot")"; else port=":$(slot_port HTTP_PORT "$slot")"; fi
+  fi
+  set_env_value "$file" MAGENTO_BASE_URL "$scheme://$name.test$port/"
+}
+
+# Said when a copy ends before it is whole, whatever ended it.
+site_copy_stopped() {
+  [[ -z ${SITE_COPY_UNFINISHED:-} ]] ||
+    echo "kapelos: the copy stopped part way. kapelos site remove $SITE_COPY_UNFINISHED -y removes what was made of it" >&2
+}
+
+# Makes NAME a second store from SOURCE: a copy of SOURCE's code as it is now, and the database, search index
+# and queue of one of SOURCE's snapshots, the newest unless one is named. SOURCE is read and never changed, and
+# keeps running, so NAME is where a test that may break a store runs. kapelos site remove NAME deletes all of it.
+site_copy() {
+  local source="" name="" snapshot="" slot="" source_file file source_project code target owner bytes need free volume table
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --snapshot | --slot)
+        [[ $# -ge 2 ]] || die "$1 takes a value. See: kapelos help"
+        if [[ $1 == --snapshot ]]; then snapshot="$2"; else slot="$2"; fi
+        shift 2
+        ;;
+      --snapshot=*)
+        snapshot="${1#--snapshot=}"
+        shift
+        ;;
+      --slot=*)
+        slot="${1#--slot=}"
+        shift
+        ;;
+      -*) die "site copy doesn't know $1" ;;
+      *)
+        if [[ -z $source ]]; then
+          source="$1"
+        elif [[ -z $name ]]; then
+          name="$1"
+        else
+          die "site copy takes the site to copy and the new site's name, and got a third: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+  [[ -n $source && -n $name ]] || die "name the site to copy and the new one, for example: kapelos site copy acme acme-scratch"
+  valid_site_name "$source"
+  valid_site_name "$name"
+  source_file="$SITES_DIR/$source.env"
+  file="$SITES_DIR/$name.env"
+  [[ -f $source_file ]] || die "there's no site called $source. kapelos sites lists them"
+  [[ ! -e $file ]] || die "there's already a site called $name. kapelos site remove $name deletes it"
+  [[ -z $(env_value "$source_file" KAPELOS_ENV_PHP) ]] ||
+    die "$source was adopted: its code stays where you keep it, with Kapelos's env.php laid over it, and site copy doesn't copy that arrangement yet. Adopt the store again under another name instead"
+  source_project="$(env_value "$source_file" COMPOSE_PROJECT_NAME)"
+  code="$(env_value "$source_file" MAGENTO_SRC)"
+  [[ -n $code && -d $code ]] || die "$source's code isn't a folder: ${code:-MAGENTO_SRC is not set in $source_file}"
+  project_is_trusted "$code" ||
+    die "$code/.kapelos brings a compose file or commands that are new or changed since you last trusted them, and a copy would run them too. Read them, then: kapelos trust $code"
+  target="$KAPELOS_HOME/$STORES_DIR/$name"
+  [[ ! -e $target ]] || die "$target is already there. Move it aside first"
+  require_name_free_on_daemon "$name"
+  if [[ -n $snapshot ]]; then
+    valid_snapshot_name "$snapshot"
+    snapshot_names "$source_project" | holds -qx "$snapshot" ||
+      die "$source has no snapshot called $snapshot. kapelos use $source && kapelos snapshot lists them"
+  else
+    snapshot="$(snapshot_latest "$source_project")"
+    [[ -n $snapshot ]] || die "$source has no snapshot to copy from. Take one first: kapelos use $source && kapelos snapshot save NAME"
+  fi
+  [[ -n $slot ]] || slot="$(first_free_slot)"
+  require_port_slot "$slot"
+  owner="$(slot_owner "$slot")"
+  [[ -z $owner ]] || die "slot $slot is $owner's. Leave out --slot and $name gets the first free one"
+
+  echo "Copying $source into a new site, $name: its code as it is now, and its snapshot $snapshot, saved $(snapshot_created "$source_project" "$snapshot"). $source isn't changed or stopped."
+  SITE_COPY_UNFINISHED="$name"
+  trap 'site_copy_stopped; heavy_turn_release' EXIT
+  mkdir -p "$SITES_DIR" "$KAPELOS_HOME/$STORES_DIR"
+  site_copy_settings "$source_file" "$file" "$name" "$slot" "$target"
+  # From here every command acts on the new site.
+  # shellcheck disable=SC2034 # load_env and the commands read it; a check of this file alone can't see them
+  ENV_FILE="$file"
+  load_env
+
+  # It is admitted the way kapelos up admits any store, before anything large is copied, counting as what
+  # the store it is a copy of used when it last ran.
+  step "Checking there is room for another store"
+  if bytes="$(recorded_footprint "$source_project")"; then
+    mkdir -p "$(site_state_dir)"
+    printf '%s\n' "$bytes" >"$(footprint_file "$COMPOSE_PROJECT_NAME")"
+  fi
+  require_ports_free "$COMPOSE_PROJECT_NAME"
+  require_room_for_another "$COMPOSE_PROJECT_NAME"
+  require_disk_room_for_copy "a copy of $source's snapshot $snapshot" "this copy" "${source_project}_snapshot-$snapshot-"
+  need="$(du -sk "$code" | awk '{ printf "%.0f\n", $1 * 1024 }')"
+  if free="$(free_bytes_in "$KAPELOS_HOME/$STORES_DIR")"; then
+    [[ $need -le $free ]] ||
+      die "$source's code is $(gib "$need") GiB, more than the $(gib "$free") GiB free in $KAPELOS_HOME/$STORES_DIR, where its copy goes"
+  fi
+
+  step "Copying $source's code, $(gib "$need") GiB, into $target"
+  mkdir "$target"
+  cp -a "$code/." "$target/"
+  # The copy's .kapelos files are byte for byte the ones trusted in the store it was copied from.
+  ! project_has_code "$target" || trust_project "$target"
+  # Read again now the code is there: a store's own settings, such as its service versions, come with it.
+  load_env
+
+  step "Making $name's database, search index and queue"
+  compose --progress quiet create db opensearch rabbitmq
+  for volume in $SNAPSHOT_VOLUMES; do
+    step "Copying $volume from the snapshot"
+    copy_volume "${source_project}_snapshot-$snapshot-$volume" "${COMPOSE_PROJECT_NAME}_$volume"
+  done
+  cmd_up
+
+  table="$(config_table)"
+  step "Setting the copy's address to $MAGENTO_BASE_URL"
+  db_root "${DB_NAME:-magento}" -e "
+    UPDATE \`$table\` SET value = '$MAGENTO_BASE_URL'
+      WHERE path IN ('web/unsecure/base_url', 'web/secure/base_url');
+    DELETE FROM \`$table\` WHERE path = 'web/cookie/cookie_domain';"
+  # A snapshot taken before a deploy is older than the code the deploy left, and Magento refuses to serve until they agree.
+  if ! magento setup:db:status >/dev/null 2>&1; then
+    step "Upgrading the copy's database to match its code"
+    magento setup:upgrade --keep-generated
+  fi
+  cmd_cache_reset
+
+  SITE_COPY_UNFINISHED=""
+  echo "$name is up at $MAGENTO_BASE_URL, with $source's logins, and with its scheduled jobs off whatever $source's are."
+  echo "It is not the active site:"
+  echo "  kapelos use $name                      makes it the one plain commands act on"
+  echo "  KAPELOS_ENV=$file kapelos ...   runs one command on it and switches nothing"
+  echo "  kapelos site remove $name              deletes it, its copy of the code included, and stops nothing else"
+}
+
 site_state_dir_of() {
   printf 'var/sites/%s' "${1#kapelos-}"
 }
@@ -427,7 +625,11 @@ cmd_site() {
       site_ports "$@"
       return
       ;;
-    *) die "kapelos site audit [SITE], kapelos site ports SITE [--slot N] or kapelos site remove SITE" ;;
+    copy)
+      site_copy "$@"
+      return
+      ;;
+    *) die "kapelos site audit [SITE], kapelos site copy SOURCE NEW, kapelos site ports SITE [--slot N] or kapelos site remove SITE" ;;
   esac
   if [[ -n ${1:-} ]]; then
     valid_site_name "$1"
