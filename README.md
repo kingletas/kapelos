@@ -281,18 +281,20 @@ bin/kapelos env acme --slot 1
 | 1 | 8180, 8181 to 8184 | 8543 | 13406 | 8125 | 9300 | 15772 | 35829 |
 | 2 | 8280, 8281 to 8284 | 8643 | 13506 | 8225 | 9400 | 15872 | 35929 |
 
-The site's `MAGENTO_BASE_URL` carries its own HTTP port, `http://acme.test:8180/` here. A hundred leaves room for the four [web servers](#more-web-servers-and-a-database-replica) above `HTTP_PORT`, and no two slots share a port. `env` refuses a slot whose ports would pass 65535, or land on another slot's. Give every site in one folder that folder's slot, and install each store with the address it will be reached at, since Magento redirects to the address in its database.
+The site's `MAGENTO_BASE_URL` carries its own HTTP port, `http://acme.test:8180/` here. A hundred leaves room for the four [web servers](#more-web-servers-and-a-database-replica) above `HTTP_PORT`, and no two slots share a port. `env` refuses a slot whose ports would pass 65535, or land on another slot's. Install each store with the address it will be reached at, since Magento redirects to the address in its database.
+
+**Nothing checks ports across folders in this release.** `env` and `site ports` pick the first block free in their own folder, so two folders left to choose both take slot 0, and `up` compares a site only with the running sites of its own folder. A port another folder's store holds is refused by Docker when the store starts, after its network and first containers are made. So name the slot for every site of all folders but one.
 
 **Site names.** Docker names a site's containers and volumes `kapelos-NAME` across the whole machine, so one name in two folders would share one set of containers and one database. `env NAME` refuses a name whose containers belong to another folder. Volumes don't record which folder made them, so it also refuses a name that has volumes and no container in this folder, and says how to remove them if they are this folder's own leftovers.
 
-**A limit across both folders.** The one-site-per-folder check can't see the other folder, so two folders could start as many stores as they like between them. Set a limit for the whole machine, in the environment of whoever runs Kapelos, or in each site's file:
+**A limit across both folders.** The room check under [Several stores at once](#several-stores-at-once) already counts every Kapelos store running on the machine, whichever folder started it. A fixed limit for the whole machine can be set as well, in the environment of whoever runs Kapelos, or in each site's file:
 
 ```bash
 export KAPELOS_MAX_RUNNING=2       # at most two Kapelos stores running on this Docker
 export KAPELOS_MEM_BUDGET_GIB=30   # and their declared memory limits add up to 30 GiB or less
 ```
 
-`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them, and then `up` checks only its own folder, as it always has.
+`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them.
 
 ## Heavy work takes turns
 
