@@ -51,10 +51,10 @@ hold() {
   ' hold "$ROOT" "$1" "$2"
 }
 
-# Waits up to five seconds for turn N to have an owner, so a test never races the holder it just started.
+# Waits up to five seconds for the first turn to have an owner, so a test never races the holder it just started.
 wait_for_turn() {
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [[ -f $KAPELOS_QUEUE_DIR/turn-${1:-1}/owner ]] && return 0
+    [[ -f $KAPELOS_QUEUE_DIR/turn-1/owner ]] && return 0
     sleep 0.5
   done
   return 1
