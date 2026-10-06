@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Put the store's code back to an earlier commit and deploy it, asking first: kapelos rollback REF
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: kapelos rollback REF [-y]
+
+Checks out REF, a commit, tag or branch, in the store's folder, then runs kapelos deploy,
+which turns on maintenance mode, installs packages without the development ones, upgrades
+the database, compiles, deploys the static files, switches the store to production mode and
+empties every cache. On a store you keep in developer mode, kapelos develop puts the
+development packages and developer mode back afterwards. It shows what it will do and asks
+first; -y skips the question.
+
+  kapelos rollback v1.4.2
+  kapelos rollback HEAD~1
+
+It refuses when the folder has uncommitted changes, so nothing is lost: commit them, or
+put them aside, first. The checkout is detached, so no branch moves, and it prints the
+commit you were on, which is the way back: kapelos rollback <that commit>.
+
+A rollback puts the code back, not the database: an upgrade that already changed the
+schema stays changed. Take a kapelos snapshot before a deploy you may want to undo.
+USAGE
+}
+
+yes=""
+ref=""
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help) usage; exit 0 ;;
+    -y | --yes) yes=1 ;;
+    -*) echo "kapelos rollback: unknown option $arg" >&2; exit 2 ;;
+    *) [[ -z $ref ]] || { echo "kapelos rollback: give one REF" >&2; exit 2; }; ref="$arg" ;;
+  esac
+done
+[[ -n $ref ]] || { echo "kapelos rollback: say which commit: kapelos rollback REF" >&2; exit 2; }
+
+: "${MAGENTO_SRC:?kapelos rollback runs through kapelos, which tells it where the store is}"
+: "${KAPELOS:?kapelos rollback runs through kapelos}"
+cd "$MAGENTO_SRC"
+git rev-parse --git-dir >/dev/null 2>&1 || { echo "kapelos rollback: $MAGENTO_SRC is not a git checkout" >&2; exit 1; }
+target="$(git rev-parse --verify --quiet "$ref^{commit}")" || { echo "kapelos rollback: no commit called $ref" >&2; exit 1; }
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "kapelos rollback: $MAGENTO_SRC has uncommitted changes; commit them, or put them aside, first" >&2
+  exit 1
+fi
+
+here="$(git rev-parse HEAD)"
+if [[ $here == "$target" ]]; then
+  echo "kapelos rollback: the store is already at $(git log -1 --format='%h %s' "$target")"
+  exit 0
+fi
+
+echo "Now:      $(git log -1 --format='%h %s' "$here")"
+echo "Going to: $(git log -1 --format='%h %s' "$target")"
+echo "Then:     kapelos deploy: maintenance mode while it runs, no development packages, and"
+echo "          production mode after it. kapelos develop puts developer mode back."
+if [[ -z $yes ]]; then
+  if [[ ! -t 0 ]]; then
+    echo "kapelos rollback: nothing to ask on, so nothing done; add -y to run it without asking" >&2
+    exit 1
+  fi
+  printf 'Roll back and deploy? [y/N] '
+  read -r answer || answer=""
+  case "$answer" in
+    y | Y | yes) ;;
+    *) echo "nothing done"; exit 1 ;;
+  esac
+fi
+
+git checkout --quiet --detach "$target"
+echo "Checked out $(git rev-parse --short HEAD). The way back: kapelos rollback $(git rev-parse --short "$here")"
+exec "$KAPELOS" deploy

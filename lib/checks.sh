@@ -147,10 +147,12 @@ audit_settings() {
   echo
   echo "Security settings that ship with the store"
   local kind subject condition severity why value found=0 config="$MAGENTO_SRC/app/etc/config.php" db_up=0
-  running_projects | grep -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && installed 2>/dev/null && db_up=1
+  running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && installed 2>/dev/null && db_up=1
   while IFS=$'\t' read -r kind subject condition severity why; do
     if [[ $kind == module ]]; then
-      value="$(sed -n "s/.*'$subject' => \([01]\).*/\1/p" "$config" 2>/dev/null | head -n 1)"
+      # The first match, kept in bash: a pipe into head would close on sed, and stop the check under set -e.
+      value="$(sed -n "s/.*'$subject' => \([01]\).*/\1/p" "$config" 2>/dev/null)"
+      value="${value%%$'\n'*}"
       [[ -n $value ]] || continue
       if audit_value_fails "$value" "$condition"; then
         report_line "$severity" "$subject is off: $why"
@@ -192,7 +194,7 @@ audit_public_files() {
 audit_headers() {
   echo
   echo "Security headers Magento sends"
-  if ! running_projects | grep -qx "${COMPOSE_PROJECT_NAME:-kapelos}"; then
+  if ! running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}"; then
     report_line note "the site isn't running, so its headers weren't checked"
     return
   fi
@@ -334,7 +336,7 @@ cmd_doctor() {
       report_either "$(yes_if require_trusted "$MAGENTO_SRC")" "the store's .kapelos compose file and commands are trusted" \
         WARN "the store's .kapelos compose file or commands changed since you last trusted them. Read them, then: kapelos trust"
     fi
-    running_projects | grep -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && running=yes
+    running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && running=yes
     if [[ $running == yes ]]; then
       report_line pass "running"
       doctor_scale

@@ -98,6 +98,10 @@ info: ## Every address, port and login: store, admin, mail, database, Valkey, Op
 valkey: ## valkey-cli on the cache or session instance — make valkey ARGS="session"
 	@$(KAPELOS) valkey $(ARGS)
 
+.PHONY: varnish
+varnish: ## varnishadm in the Varnish container — make varnish ARGS="ban.list"
+	@$(KAPELOS) varnish $(ARGS)
+
 .PHONY: logs
 logs: ## Follow the logs — make logs ARGS="php"
 	@$(KAPELOS) logs $(ARGS)

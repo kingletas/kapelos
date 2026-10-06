@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# check-image against a stand-in docker that prints a long module list slowly, with the module
+# being asked about first. Piped into grep -q, that list is cut off at the first match and docker
+# fails writing the rest, which under pipefail turned SourceGuardian present into "missing" and
+# Xdebug present into "fine". Offline: nothing is built and no container starts.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# docker build does nothing; docker run IMAGE php -m prints the module list a line at a time.
+# The run with Xdebug's scan directory is the full image, the one without it is what compiling sees.
+mkdir "$SCRATCH/bin"
+cat >"$SCRATCH/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+[[ $1 == run ]] || exit 0
+[[ " $* " == *" php -m "* ]] || exit 0
+modules=()
+case " $* " in
+  *" kapelos-php:check-sourceguardian "*) modules=(SourceGuardian) ;;
+  *"PHP_INI_SCAN_DIR="*) modules=(xdebug) ;;
+  *) [[ ${STUB_XDEBUG_WHEN_COMPILING:-no} == yes ]] && modules=(xdebug) ;;
+esac
+modules+=(bcmath ftp gd intl pcntl pdo_mysql redis soap sockets xsl zip "Zend OPcache")
+for number in $(seq 1 200); do modules+=("filler_$number"); done
+for module in "${modules[@]}"; do
+  printf '%s\n' "$module"
+  sleep 0.002
+done
+STUB
+chmod +x "$SCRATCH/bin/docker"
+
+check_image() {
+  (cd "$ROOT" && PATH="$SCRATCH/bin:$PATH" ./bin/kapelos check-image) >"$SCRATCH/out" 2>&1
+}
+
+status=0; check_image || status=$?
+if [[ $status -eq 0 ]] && grep -q 'every extension is present' "$SCRATCH/out"; then
+  result 0 "SourceGuardian listed first in a slow list is found, not reported missing"
+else
+  result 1 "SourceGuardian listed first in a slow list is found, not reported missing"
+  sed 's/^/      /' "$SCRATCH/out" >&2
+fi
+
+status=0; STUB_XDEBUG_WHEN_COMPILING=yes check_image || status=$?
+if [[ $status -ne 0 ]] && grep -q 'Xdebug loads without its scan directory' "$SCRATCH/out"; then
+  result 0 "Xdebug loading where compiling would see it is caught, however early it is listed"
+else
+  result 1 "Xdebug loading where compiling would see it is caught, however early it is listed"
+  sed 's/^/      /' "$SCRATCH/out" >&2
+fi
+
+if [[ $FAILURES -gt 0 ]]; then
+  echo "$FAILURES failed" >&2
+  exit 1
+fi

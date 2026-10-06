@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Drop the cached pages whose address matches a pattern, and keep the rest: kapelos varnish-ban PATTERN
+set -euo pipefail
+
+if [[ ${1:-} == -h || ${1:-} == --help ]]; then
+  cat <<'USAGE'
+Usage: kapelos varnish-ban PATTERN
+
+Bans every page Varnish has cached whose address matches PATTERN, a regular expression
+matched against the path and query, so the next request for each one goes to Magento.
+Every other cached page stays cached.
+
+  kapelos varnish-ban '^/checkout'      every page under /checkout
+  kapelos varnish-ban '\.html$'         every page ending in .html
+  kapelos varnish-ban '^/gear/bags'     one category and the pages under it
+
+To empty all of Varnish, and Magento's caches with it, use kapelos cache-reset.
+`kapelos varnish ban.list` shows the bans Varnish is holding.
+USAGE
+  exit 0
+fi
+
+: "${KAPELOS:?kapelos varnish-ban runs through kapelos, which tells it where the store is}"
+pattern="${1:-}"
+[[ $# -eq 1 ]] || { echo "kapelos varnish-ban: give one PATTERN; kapelos varnish-ban -h has examples" >&2; exit 2; }
+
+# A pattern every address matches is cache-reset's job, and it empties Magento's caches too.
+# Bash's own regular expressions are close enough to Varnish's to ask whether a pattern matches
+# both the shortest address and a made-up one; a pattern bash can't read skips the question.
+matches_everything() {
+  local probe
+  for probe in / '/a/made-up/page.html?with=query'; do
+    [[ $probe =~ $1 ]] || return 1
+  done
+}
+if matches_everything "$pattern"; then
+  echo "kapelos varnish-ban: '$pattern' matches every page; kapelos cache-reset empties all of it" >&2
+  exit 2
+fi
+# varnishadm reads its own quoting, so a quote or a line break would end the pattern early.
+if [[ $pattern == *'"'* || $pattern == *$'\n'* ]]; then
+  echo "kapelos varnish-ban: a pattern can't hold a double quote or a line break" >&2
+  exit 2
+fi
+
+"$KAPELOS" varnish ban req.url '~' "$pattern"
+echo "banned the cached pages matching $pattern; kapelos varnish ban.list shows it"

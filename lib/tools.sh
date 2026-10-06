@@ -91,7 +91,7 @@ cmd_manipulus() {
   locale="${location[5]}"
   # In developer mode pub/static holds only what's been requested so far, and a plan made from that is empty.
   require_running php
-  if ! magento deploy:mode:show </dev/null 2>/dev/null | grep -q production ||
+  if ! magento deploy:mode:show </dev/null 2>/dev/null | holds -q production ||
     [[ ! -f $MAGENTO_SRC/pub/static/$theme/$locale/requirejs-config.js ]]; then
     die "manipulus reads the static files a production deploy writes, and this store isn't in production mode with $theme/$locale deployed. Run kapelos deploy first"
   fi
