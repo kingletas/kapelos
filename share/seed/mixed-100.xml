@@ -11,6 +11,10 @@
 -->
 <config xmlns:xi="http://www.w3.org/2001/XInclude">
     <profile>
+        <!-- The generator's stand-ins for mail. Without this line it looks beside this file, finds
+             nothing, says nothing, and sends through the store's own mail transport. The path and the
+             includes below are from var/kapelos-seed, where kapelos seed puts this file. -->
+        <di>../../setup/performance-toolkit/config/di.xml</di>
         <websites>2</websites>
         <store_groups>2</store_groups>
         <store_views>3</store_views>
@@ -65,5 +69,11 @@
                 <value>1</value>
             </config>
         </configs>
+        <xi:include href="../../setup/performance-toolkit/config/searchTermsLarge.xml" />
+        <xi:include href="../../setup/performance-toolkit/config/attributeSets.xml" />
+        <xi:include href="../../setup/performance-toolkit/config/searchConfig.xml" />
+        <xi:include href="../../setup/performance-toolkit/config/customerConfig.xml" />
+        <xi:include href="../../setup/performance-toolkit/config/description.xml" />
+        <xi:include href="../../setup/performance-toolkit/config/shortDescription.xml" />
     </profile>
 </config>

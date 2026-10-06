@@ -2,8 +2,12 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2016 # single-quoted code runs in a container's shell, which expands it
 
-# Where, from the store's root, a profile Kapelos ships is put for the generator to read.
+# Where, from the store's root, a profile Kapelos ships is put for the generator to read. The profiles in
+# share/seed name Magento's own files by a path from here, two folders below the root.
 SEED_PROFILE_DIR=var/kapelos-seed
+# The generator's stand-ins for mail. A profile names this file, and the generator skips a missing one without
+# a word and sends through the store's own transport, so seed asks for both before it generates.
+SEED_MAIL_STAND_INS=setup/performance-toolkit/config/di.xml
 SEED_RECORD_HEADER='when	profile	generate_s	reindex_s	simples	configurables	bundles	categories	customers	orders	db_mib	search_mib	queue_mib	media_mib	php_peak_mib	db_peak_mib	search_peak_mib'
 
 # The file that holds one line for every seed of this site, on this machine only.
@@ -27,6 +31,8 @@ magento_seed_profiles() {
 seed_profile_path() {
   local name="$1" file="$KAPELOS_HOME/share/seed/$1.xml" edition
   if [[ -f $file ]]; then
+    grep -qF "<di>../../$SEED_MAIL_STAND_INS</di>" "$file" ||
+      die "share/seed/$name.xml doesn't name the generator's stand-ins for mail, so its mail would go out through the store's own transport. It needs this line in its profile: <di>../../$SEED_MAIL_STAND_INS</di>"
     exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$name" <"$file"
     printf '%s/%s.xml' "$SEED_PROFILE_DIR" "$name"
     return 0
@@ -146,6 +152,31 @@ seed_reset() {
   fi
 }
 
+# Says which snapshot a seed can be undone with and when it was saved, since one that is weeks old is a way
+# back to a store weeks old.
+seed_way_back() {
+  local name
+  name="$(snapshot_latest)"
+  if [[ -n $name ]]; then
+    echo "The way back from this seed is the snapshot $name, saved $(snapshot_created "$COMPOSE_PROJECT_NAME" "$name"): kapelos snapshot restore $name"
+  else
+    echo "This site has no snapshot, so there is no way back from this seed short of installing the store again."
+  fi
+}
+
+# Takes the profile kapelos put in the store out again; one of Magento's own is left where Magento keeps it.
+seed_profile_remove() {
+  [[ $1 == "$SEED_PROFILE_DIR"/* ]] || return 0
+  exec_quiet php sh -c 'rm -f "$1" && rmdir "$2" 2>/dev/null; true' sh "$1" "$SEED_PROFILE_DIR" </dev/null || true
+}
+
+seed_failed() {
+  seed_profile_remove "$2"
+  echo "kapelos: $1 failed, so nothing was recorded and no snapshot of the half-seeded store was saved." >&2
+  seed_way_back >&2
+  exit 1
+}
+
 # Generates, reindexes, records and snapshots. The generator adds only what the store lacks to reach the
 # profile's numbers, so a store grows by seeding a larger profile over a smaller one.
 seed_run() {
@@ -164,6 +195,8 @@ seed_run() {
   installed || die "the store isn't installed yet. Run: kapelos magento-install"
   keep="${SEED_SNAPSHOT_KEEP:-1}"
   [[ $keep =~ ^[1-9][0-9]?$ ]] || die "SEED_SNAPSHOT_KEEP is $keep, and it takes how many snapshots of one profile to keep, 1 to 99"
+  exec_quiet php test -f "$SEED_MAIL_STAND_INS" </dev/null ||
+    die "this store has no $SEED_MAIL_STAND_INS, which holds the generator's stand-ins for mail. Without it the generator sends its mail through the store's own transport, so nothing is generated"
   path="$(seed_profile_path "$profile")" || die "there's no profile called $profile. kapelos seed lists them"
   if [[ $snapshot == yes ]]; then
     # Both asked before the hours of generating, not after them.
@@ -172,14 +205,17 @@ seed_run() {
     # A store with no snapshot at all has no way back from a seed, so it gets one first.
     [[ -n $(snapshot_names) ]] || cmd_snapshot save before-seed
   fi
+  seed_way_back
 
   step "Generating $profile with Magento's own generator. A large profile takes hours"
   SECONDS=0
-  exec_php_no_xdebug php -d memory_limit=-1 bin/magento setup:performance:generate-fixtures --skip-reindex "$path"
+  exec_php_no_xdebug php -d memory_limit=-1 bin/magento setup:performance:generate-fixtures --skip-reindex "$path" ||
+    seed_failed "generating $profile" "$path"
   generate_s=$SECONDS
+  seed_profile_remove "$path"
   step "Reindexing"
   SECONDS=0
-  exec_php_no_xdebug php -d memory_limit=-1 bin/magento indexer:reindex
+  exec_php_no_xdebug php -d memory_limit=-1 bin/magento indexer:reindex || seed_failed "the reindex after generating $profile" "$path"
   reindex_s=$SECONDS
   cmd_cache_reset
   step "Recording what the store holds and what it cost"

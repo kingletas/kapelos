@@ -127,6 +127,8 @@ exec_quiet() {
   shift
   case "\$service \$*" in
     "php test -f app/etc/env.php") [[ \${STUB_NOT_INSTALLED:-no} == no ]] ;;
+    "php test -f setup/performance-toolkit/config/di.xml") [[ \${STUB_NO_MAIL_STAND_INS:-no} == no ]] ;;
+    "php sh -c rm -f"*) echo "profile removed \$5" >>"\$LOG" ;;
     "php sh -c mkdir"*)
       cat >"$IN_STORE"
       echo "profile put at \$5/\$6.xml" >>"\$LOG"
@@ -166,6 +168,14 @@ check "listing the profiles doesn't" bash -c "! (. '$A/lib/queue.sh'; heavy_comm
 check "nor asking for them by name" bash -c "! (. '$A/lib/queue.sh'; heavy_command seed list)"
 check "nor reading the record" bash -c "! (. '$A/lib/queue.sh'; heavy_command seed steps)"
 
+# --- the profiles Kapelos ships ------------------------------------------------
+
+for profile in "$ROOT"/share/seed/*.xml; do
+  name="$(basename "$profile" .xml)"
+  check "$name names the generator's stand-ins for mail, from where seed puts it" grep -qF "<di>../../setup/performance-toolkit/config/di.xml</di>" "$profile"
+  check "$name includes Magento's six shared files from there" test "$(grep -c '<xi:include href="../../setup/performance-toolkit/config/[A-Za-z]*.xml" />' "$profile")" -eq 6
+done
+
 # --- the first seed of a store with no snapshot ---------------------------------
 
 out="$(run_on shop cmd_seed mixed-10)"
@@ -177,6 +187,8 @@ reindexed="$(grep -n "bin/magento indexer:reindex$" "$LOG" | cut -d: -f1)"
 saved_before="$(grep -n "^up etc/sites/shop.env$" "$LOG" | sed -n 1p | cut -d: -f1)"
 check "Magento's generator runs on that profile, leaving the reindex to kapelos" test -n "$generated"
 check "after the way back is saved" test "${saved_before:-999}" -lt "${generated:-0}"
+check "and it says which snapshot the way back is, and when it was saved" grep -qE "^The way back from this seed is the snapshot before-seed, saved [0-9-]+ [0-9:]+: kapelos snapshot restore before-seed$" <<<"$out"
+check "the profile is taken out of the store once it has been read" grep -qx "profile removed var/kapelos-seed/mixed-10.xml" "$LOG"
 check "the reindex follows the generator" test "${generated:-999}" -lt "${reindexed:-0}"
 check "with no memory limit on either" test "$(grep -c "^php php -d memory_limit=-1 bin/magento " "$LOG")" -eq 2
 check "every cache is emptied afterwards" grep -qx "cache files" "$LOG"
@@ -217,6 +229,7 @@ out="$(run_on shop cmd_seed mixed-10)"
 check "a profile seeded again keeps only its newest snapshot" lacks "seed-mixed-10-20260110-020000" "$STUB_DOCKER/volumes"
 check "and says which one went" grep -q "Deleted seed-mixed-10-20260110-020000: seed-mixed-10 keeps its newest 1." <<<"$out"
 check "a snapshot of another name is left alone" grep -q "^kapelos-shop_snapshot-clean-db-data|" "$STUB_DOCKER/volumes"
+check "an old way back is named with its date, so its age is seen before generating" grep -q "^The way back from this seed is the snapshot seed-mixed-10-20260110-020000, saved 2026-01-10 02:00:00: " <<<"$out"
 
 reset_docker
 saved_snapshot shop clean "2026-01-05 09:00:00"
@@ -233,6 +246,7 @@ rm -f "$IN_STORE"
 out="$(run_on shop cmd_seed medium_msite)"
 check "one of Magento's own profiles is read where Magento keeps it" grep -q "generate-fixtures --skip-reindex setup/performance-toolkit/profiles/ce/medium_msite.xml$" "$LOG"
 check "and nothing is put in the store for it" test ! -e "$IN_STORE"
+check "nor taken out of it" lacks "profile removed" "$LOG"
 check "its series is named with dashes, as a snapshot's name is" grep -q "^Saved seed-medium-msite-[0-9]\{8\}-[0-9]\{6\}\." <<<"$out"
 
 # --- no snapshot, and what is refused ---------------------------------------------
@@ -242,6 +256,7 @@ out="$(run_on shop cmd_seed mixed-10 --no-snapshot)"
 check "--no-snapshot seeds and saves nothing" lacks "volume create" "$STUB_DOCKER/calls"
 check "and says how to take one" grep -q "with no snapshot: kapelos snapshot save NAME takes one" <<<"$out"
 check "it still generates" grep -q "generate-fixtures" "$LOG"
+check "and says there is no way back" grep -q "^This site has no snapshot, so there is no way back from this seed" <<<"$out"
 
 reset_docker
 lines="$(grep -c . "$RECORD")"
@@ -250,6 +265,11 @@ check "a name that is no profile's is refused" refused "a profile's name uses lo
 check "an option seed doesn't know is refused" refused "seed doesn't know --fast" run_on shop cmd_seed mixed-10 --fast
 check "an option where the profile goes is refused" refused "seed takes a profile's name first" run_on shop cmd_seed --no-snapshot
 check "a store that isn't installed is refused" refused "the store isn't installed yet" env STUB_NOT_INSTALLED=yes KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+check "a store without the generator's stand-ins for mail is refused" refused "which holds the generator's stand-ins for mail" \
+  env STUB_NO_MAIL_STAND_INS=yes KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+grep -v "<di>" "$ROOT/share/seed/mixed-10.xml" >"$A/share/seed/bare.xml"
+check "and so is a profile of ours that doesn't name them" refused "share/seed/bare.xml doesn't name the generator's stand-ins for mail" run_on shop cmd_seed bare
+rm -f "$A/share/seed/bare.xml"
 check "none of them generated anything" lacks "generate-fixtures" "$LOG"
 check "or saved anything" lacks "volume create" "$STUB_DOCKER/calls"
 
@@ -259,10 +279,20 @@ check "so nothing is generated for it" lacks "generate-fixtures" "$LOG"
 
 reset_docker
 saved_snapshot shop clean "2026-01-05 09:00:00"
-check "a generator that fails ends the seed" refused "" env STUB_PHP_FAILS=generate-fixtures KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+out="$(STUB_PHP_FAILS=generate-fixtures run_on shop cmd_seed mixed-10 2>&1)" && out="it passed"
+check "a generator that fails ends the seed, and says nothing was kept of it" grep -q "^kapelos: generating mixed-10 failed, so nothing was recorded and no snapshot of the half-seeded store was saved.$" <<<"$out"
+check "with the way back and its date said again" test "$(grep -c "^The way back from this seed is the snapshot clean, saved 2026-01-05 09:00:00: kapelos snapshot restore clean$" <<<"$out")" -eq 2
 check "before any reindex" lacks "indexer:reindex" "$LOG"
 check "with nothing added to the record" test "$(grep -c . "$RECORD")" -eq "$lines"
-check "and no snapshot of a half-made store" lacks "snapshot-seed-" "$STUB_DOCKER/volumes"
+check "no snapshot of a half-made store" lacks "snapshot-seed-" "$STUB_DOCKER/volumes"
+check "and the profile out of the store" grep -qx "profile removed var/kapelos-seed/mixed-10.xml" "$LOG"
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+out="$(STUB_PHP_FAILS=indexer:reindex run_on shop cmd_seed mixed-10 2>&1)" && out="it passed"
+check "a reindex that fails ends the seed the same way" grep -q "^kapelos: the reindex after generating mixed-10 failed, so nothing was recorded" <<<"$out"
+check "with nothing added to the record either" test "$(grep -c . "$RECORD")" -eq "$lines"
+check "and no snapshot" lacks "snapshot-seed-" "$STUB_DOCKER/volumes"
 
 # --- putting a seed back ------------------------------------------------------------
 
