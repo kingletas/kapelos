@@ -420,11 +420,38 @@ site_remove() {
   echo "Removed $name."
 }
 
+# Points a setting that names a file inside SOURCE's code, such as a store's own VCL, at the same file in the
+# copy's. Kapelos writes such a path whole or from its own folder, so both are followed; a folder whose name
+# only starts the same is left alone.
+site_copy_paths() {
+  local source_file="$1" file="$2" code="$3" target="$4" line key value new quote body rel_code rel_target
+  rel_code="${code#"$KAPELOS_HOME"/}"
+  rel_target="${target#"$KAPELOS_HOME"/}"
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == *=* ]] || continue
+    key="${line%%=*}"
+    [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ && $key != MAGENTO_SRC ]] || continue
+    value="${line#*=}"
+    new="${value//"$code/"/"$target/"}"
+    if [[ $rel_code != "$code" ]]; then
+      quote=""
+      case "$new" in \"* | \'*) quote="${new:0:1}" ;; esac
+      body="${new#"$quote"}"
+      case "$body" in
+        "./$rel_code/"*) new="$quote./$rel_target/${body#"./$rel_code/"}" ;;
+        "$rel_code/"*) new="$quote$rel_target/${body#"$rel_code/"}" ;;
+      esac
+    fi
+    [[ $new == "$value" ]] || set_env_value "$file" "$key" "$new"
+  done <"$source_file"
+}
+
 # NAME's settings: SOURCE's, passwords included, since the copied database and env.php already hold them, with
-# its own name, hostname, ports and code, on one web server with no replica.
+# its own name, hostname, ports and code, on one web server with no replica, and with its scheduled jobs off.
 site_copy_settings() {
   local source_file="$1" file="$2" name="$3" slot="$4" target="$5" key old_url scheme=http port=""
   (umask 077 && cp "$source_file" "$file")
+  site_copy_paths "$source_file" "$file" "$(env_value "$source_file" MAGENTO_SRC)" "$target"
   set_env_value "$file" COMPOSE_PROJECT_NAME "kapelos-$name"
   set_env_value "$file" APP_HOST "$name.test"
   set_env_value "$file" MAGENTO_SRC "$target"
@@ -433,6 +460,9 @@ site_copy_settings() {
   done
   set_env_value "$file" WEB_SERVERS 1
   set_env_value "$file" DB_REPLICAS 0
+  # A copy would run SOURCE's scheduled jobs beside it, with the same settings and the same outside servers.
+  # kapelos cron on turns them on, and asks first for a store that isn't disposable.
+  set_env_value "$file" CRON no
   # The hostnames of SOURCE's other storefronts are SOURCE's, so the copy serves its default store on its own.
   for key in STORES PROXY_HOSTS; do
     [[ -z $(env_value "$file" "$key") ]] || set_env_value "$file" "$key" ""
@@ -571,7 +601,8 @@ site_copy() {
   cmd_cache_reset
 
   SITE_COPY_UNFINISHED=""
-  echo "$name is up at $MAGENTO_BASE_URL, with $source's logins. It is not the active site:"
+  echo "$name is up at $MAGENTO_BASE_URL, with $source's logins, and with its scheduled jobs off whatever $source's are."
+  echo "It is not the active site:"
   echo "  kapelos use $name                      makes it the one plain commands act on"
   echo "  KAPELOS_ENV=$file kapelos ...   runs one command on it and switches nothing"
   echo "  kapelos site remove $name              deletes it, its copy of the code included, and stops nothing else"

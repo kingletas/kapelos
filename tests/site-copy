@@ -263,8 +263,13 @@ check "and nothing was written for the copy" test ! -e "$A/etc/sites/shop-scratc
 
 snapshot shop clean "2026-01-05 09:00"
 snapshot shop deploy-20260111-020000 "2026-01-11 02:00:00"
-echo 'STORES="second.test=second_store"' >>"$A/etc/sites/shop.env"
-echo "DB_REPLICAS=1" >>"$A/etc/sites/shop.env"
+{
+  echo 'STORES="second.test=second_store"'
+  echo "DB_REPLICAS=1"
+  echo "CRON=yes"
+  echo "VARNISH_VCL=$STORE/var/varnish.vcl"
+  echo "KEPT_ELSEWHERE=$STORE-archive/notes.txt"
+} >>"$A/etc/sites/shop.env"
 before="$(cksum <"$A/etc/sites/shop.env")"
 out="$(run_on shop cmd_site copy shop shop-scratch 2>&1)"
 copy="$A/etc/sites/shop-scratch.env"
@@ -280,6 +285,12 @@ check "it keeps the passwords the copied database knows" test "$(value "$copy" D
 check "its settings are readable only by you" test "$(find "$copy" -perm 600 | wc -l)" -eq 1
 check "it runs one web server and no replica, whatever the site it copies runs" test "$(value "$copy" DB_REPLICAS)$(value "$copy" WEB_SERVERS)" = 01
 check "the other storefronts' hostnames stay with the site it copies" test -z "$(value "$copy" STORES)"
+check "its scheduled jobs are off, though the site it copies runs them" test "$(value "$copy" CRON)" = no
+check "and it says so" grep -q "with its scheduled jobs off whatever shop's are" <<<"$out"
+check "a setting that names a file in the copied code names the copy's file" \
+  test "$(value "$copy" VARNISH_VCL)" = "$A/var/stores/shop-scratch/var/varnish.vcl"
+check "a folder whose name only starts like the code's is left alone" \
+  test "$(value "$copy" KEPT_ELSEWHERE)" = "$STORE-archive/notes.txt"
 check "the code is copied" test -f "$A/var/stores/shop-scratch/app/etc/env.php"
 check "hidden folders included" test -f "$A/var/stores/shop-scratch/.kapelos/settings.env"
 check "the site it copies keeps its code" test -f "$STORE/app/etc/env.php"
@@ -337,6 +348,25 @@ sed -i.bak "s|^MAGENTO_BASE_URL=.*|MAGENTO_BASE_URL=http://shop.test/|" "$A/etc/
 run_on shop cmd_site copy shop proxied --slot 8 >/dev/null 2>&1
 check "a store behind the reverse proxy has no port in its address, and neither has its copy" test "$(value "$A/etc/sites/proxied.env" MAGENTO_BASE_URL)" = "http://proxied.test/"
 rm -f "$A/etc/sites/shop.env.bak"
+
+# A store Kapelos keeps in its own folder writes paths from that folder, and those follow the copy too.
+mkdir -p "$A/var/stores/inhouse/var"
+kapelos env inhouse >/dev/null
+sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$A/var/stores/inhouse|" "$A/etc/sites/inhouse.env"
+rm -f "$A/etc/sites/inhouse.env.bak"
+{
+  echo "VARNISH_VCL=./var/stores/inhouse/var/varnish.vcl"
+  echo 'NGINX_EXTRA="var/stores/inhouse/nginx.conf"'
+  echo "SIBLING=./var/stores/inhouse-two/var/varnish.vcl"
+} >>"$A/etc/sites/inhouse.env"
+snapshot inhouse clean "2026-01-05 09:00"
+run_on shop cmd_site copy inhouse inhouse-scratch >/dev/null 2>&1
+check "a path written from Kapelos's folder follows the copy" \
+  test "$(value "$A/etc/sites/inhouse-scratch.env" VARNISH_VCL)" = "./var/stores/inhouse-scratch/var/varnish.vcl"
+check "quoted or not, with or without the leading dot" \
+  test "$(value "$A/etc/sites/inhouse-scratch.env" NGINX_EXTRA)" = '"var/stores/inhouse-scratch/nginx.conf"'
+check "and a sibling folder's path does not" \
+  test "$(value "$A/etc/sites/inhouse-scratch.env" SIBLING)" = "./var/stores/inhouse-two/var/varnish.vcl"
 
 # Admitted like any other store, before anything large is copied.
 running s1 shop $((3 * GIB))

@@ -263,6 +263,8 @@ What to know before you rely on it:
 - **It has the same logins as the store it copies**, the admin's included, because the copied database and `env.php` already hold them. Its settings file is readable only by you.
 - **The code is today's and the data is the snapshot's.** If the store was deployed since that snapshot, the copy's database is upgraded to match its code. If the code has since lost something the snapshot's data depends on, the copy is the place you find out.
 - **It runs on one web server with no replica**, whatever the store it copies runs on, and it serves that store's default storefront only: other hostnames in `STORES` stay with the original.
+- **Its scheduled jobs are off, whatever the original's are.** A copy with cron on would run the same jobs beside the original, with the same settings, to the same outside servers. `bin/kapelos cron on` turns them on for the copy, and asks first unless the store is disposable.
+- **A setting that names a file inside the original's code names the same file in the copy's**, such as a store's own VCL in `VARNISH_VCL`. A path anywhere else is kept as it is, so the copy shares that file with the original.
 - **Add its hostname to your hosts file** the way you did for the first store.
 - **A store that pins its address in `env.php`** keeps that address in the copy, because the copy's `env.php` is the same file. Change it there.
 - **An adopted store isn't copied yet.** Its code stays where you keep it with Kapelos's `env.php` laid over it, and `site copy` says so and stops.
