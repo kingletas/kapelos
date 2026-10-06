@@ -143,7 +143,7 @@ Working in the store
                          The Composer repositories Kapelos knows: which the store uses, or add
                          and remove them, or list the packages one serves
   sample-data            Add Magento's sample products, for tools that need a catalogue
-  seed [PROFILE] [--no-snapshot]
+  seed [PROFILE] [--no-snapshot] [--empty-carts]
                          Fill the store to a profile's size with Magento's own generator, reindex,
                          record what it cost and save a snapshot; with no profile, list them
   seed reset PROFILE [-y]

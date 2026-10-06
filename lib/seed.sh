@@ -99,6 +99,15 @@ seed_counts() {
     (SELECT COUNT(*) FROM \`$db\`.\`${prefix}sales_order\`)" </dev/null
 }
 
+# The WHERE that picks the carts numbered above the store's last order. The generator gives each order's cart
+# the order's own number, so one of these stops it at its first order with a duplicate entry.
+seed_carts_in_the_way_where() {
+  local db="${DB_NAME:-magento}" prefix
+  prefix="$(table_prefix)"
+  printf 'FROM `%s`.`%squote` WHERE entity_id > (SELECT COALESCE(MAX(entity_id), 0) FROM `%s`.`%ssales_order`)' \
+    "$db" "$prefix" "$db" "$prefix"
+}
+
 # Adds this seed's line to the site's record: what the store holds now, what it takes on disk, how long the two
 # slow steps took, and the most memory each of the three busiest containers has held since it started.
 seed_record() {
@@ -182,11 +191,12 @@ seed_failed() {
 # Generates, reindexes, records and snapshots. The generator adds only what the store lacks to reach the
 # profile's numbers, so a store grows by seeding a larger profile over a smaller one.
 seed_run() {
-  local profile="$1" snapshot=yes keep path generate_s reindex_s
+  local profile="$1" snapshot=yes empty_carts=no keep path generate_s reindex_s carts
   shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --no-snapshot) snapshot=no ;;
+      --empty-carts) empty_carts=yes ;;
       *) die "seed doesn't know $1. See: kapelos help" ;;
     esac
     shift
@@ -206,6 +216,9 @@ seed_run() {
   else
     path="$(magento_seed_profile_path "$profile")" || die "there's no profile called $profile. kapelos seed lists them"
   fi
+  carts="$(db_root -N -e "SELECT COUNT(*) $(seed_carts_in_the_way_where)" </dev/null)" || die "can't count this store's carts, so can't tell whether the generator's orders would fit"
+  [[ $carts == 0 || $empty_carts == yes ]] ||
+    die "this store has $carts shopping carts numbered above its last order, and the generator gives each order's cart the order's own number, so it would stop at its first order. --empty-carts deletes those carts after the way back is saved: kapelos seed $profile --empty-carts"
   if [[ $snapshot == yes ]]; then
     # Both asked before the hours of generating, not after them.
     require_helper_starts
@@ -214,6 +227,10 @@ seed_run() {
     [[ -n $(snapshot_names) ]] || cmd_snapshot save before-seed
   fi
   seed_way_back
+  if [[ $carts != 0 ]]; then
+    step "Deleting the $carts shopping carts numbered above the last order"
+    db_root -e "DELETE $(seed_carts_in_the_way_where)" </dev/null
+  fi
   # Put there last, so a refusal above leaves nothing of the seed in the store.
   ! seed_profile_is_ours "$profile" || seed_profile_put "$profile"
 

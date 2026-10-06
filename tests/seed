@@ -121,7 +121,13 @@ exec_php_no_xdebug() {
   echo "php \$*" >>"\$LOG"
   [[ "\$*" != *"\${STUB_PHP_FAILS:-no step fails}"* ]]
 }
-db_root() { printf '26000\t1000\t1000\t100\t2000\t5000\n'; }
+db_root() {
+  case "\$*" in
+    *"SELECT COUNT(*) FROM "*"quote"*" WHERE entity_id > "*) echo "\${STUB_CARTS:-0}" ;;
+    *"DELETE FROM "*"quote"*" WHERE entity_id > "*) echo "carts deleted" >>"\$LOG" ;;
+    *) printf '26000\t1000\t1000\t100\t2000\t5000\n' ;;
+  esac
+}
 exec_quiet() {
   local service="\$1"
   shift
@@ -272,7 +278,10 @@ out="$(run_on shop cmd_seed bare 2>&1)" && out="it passed"
 check "and so is a profile of ours that doesn't name them" grep -q "share/seed/bare.xml doesn't name the generator's stand-ins for mail" <<<"$out"
 check "with that one reason and no other" test "$(grep -c "^kapelos: " <<<"$out")" -eq 1
 rm -f "$A/share/seed/bare.xml"
+check "a store with carts numbered above its last order is refused, with how many and what to do" refused "this store has 3 shopping carts numbered above its last order" \
+  env STUB_CARTS=3 KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
 check "none of them generated anything" lacks "generate-fixtures" "$LOG"
+check "or deleted a cart" lacks "carts deleted" "$LOG"
 check "or saved anything" lacks "volume create" "$STUB_DOCKER/calls"
 
 check "a snapshot Docker wouldn't make is found out before generating, not after" refused "Docker wouldn't start the small container" \
@@ -296,6 +305,19 @@ out="$(STUB_PHP_FAILS=indexer:reindex run_on shop cmd_seed mixed-10 2>&1)" && ou
 check "a reindex that fails ends the seed the same way" grep -q "^kapelos: the reindex after generating mixed-10 failed, so nothing was recorded" <<<"$out"
 check "with nothing added to the record either" test "$(grep -c . "$RECORD")" -eq "$lines"
 check "and no snapshot" lacks "snapshot-seed-" "$STUB_DOCKER/volumes"
+
+reset_docker
+STUB_CARTS=3 run_on shop cmd_seed mixed-10 --empty-carts >/dev/null
+deleted="$(grep -n "^carts deleted$" "$LOG" | cut -d: -f1)"
+saved_before="$(grep -n "^up etc/sites/shop.env$" "$LOG" | sed -n 1p | cut -d: -f1)"
+generated="$(grep -n "generate-fixtures" "$LOG" | cut -d: -f1)"
+check "--empty-carts deletes the carts in the generator's way" test -n "$deleted"
+check "after the way back is saved" test "${saved_before:-999}" -lt "${deleted:-0}"
+check "and before generating" test "${deleted:-999}" -lt "${generated:-0}"
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+run_on shop cmd_seed mixed-10 --empty-carts >/dev/null
+check "with no cart in the way it deletes nothing" lacks "carts deleted" "$LOG"
 
 # --- putting a seed back ------------------------------------------------------------
 
