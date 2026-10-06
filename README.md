@@ -18,7 +18,9 @@ A *kapelos* was the small shopkeeper of an ancient Greek town. His bigger siblin
 - [How Kapelos is laid out](#how-kapelos-is-laid-out)
 - [Settings](#settings)
 - [Several projects](#several-projects)
+- [Several stores at once](#several-stores-at-once)
 - [Two stores on one machine](#two-stores-on-one-machine)
+- [Heavy work takes turns](#heavy-work-takes-turns)
 - [Running a store you already have](#running-a-store-you-already-have)
 - [A store's own settings](#a-stores-own-settings)
 - [Several storefronts](#several-storefronts)
@@ -200,6 +202,9 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `DB_PORT` | `13306` | MariaDB, for a database tool on your machine |
 | `OPENSEARCH_PORT`, `RABBITMQ_UI_PORT`, `MAIL_UI_PORT` | `9200`, `15672`, `8025` | OpenSearch, RabbitMQ's management page and Mailpit, on your machine. `env --slot` moves every port at once; see [Two stores on one machine](#two-stores-on-one-machine) |
 | `KAPELOS_MAX_RUNNING`, `KAPELOS_MEM_BUDGET_GIB` | *(none)* | Limits across every Kapelos folder on one Docker. See [Two stores on one machine](#two-stores-on-one-machine) |
+| `KAPELOS_RESERVE_GIB`, `KAPELOS_MAX_LOAD` | `8`, three quarters of the cores | The memory another store must leave free, and the five-minute load it must start under; 0 turns either off. See [Several stores at once](#several-stores-at-once) |
+| `KAPELOS_DISK_RESERVE_GIB` | `20` | The disk that must stay free where Docker keeps its data before a store starts or a snapshot is taken; 0 turns it off. See [Several stores at once](#several-stores-at-once) |
+| `KAPELOS_HEAVY_AT_ONCE`, `KAPELOS_HEAVY_WAIT` | `1`, `3600` | How many heavy jobs run at once across the machine, and how many seconds one waits for its turn. See [Heavy work takes turns](#heavy-work-takes-turns) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
@@ -218,22 +223,51 @@ Each project is a **site**: a settings file in `etc/sites/` with its own code fo
 
 ```bash
 bin/kapelos env acme          # writes etc/sites/acme.env; set MAGENTO_SRC in it
-bin/kapelos use acme          # stops whichever site is running, and switches to acme
+bin/kapelos use acme          # makes acme the active site; nothing running stops
 bin/kapelos up
 bin/kapelos sites             # lists them, with a * on the active one
 ```
 
-`demo`, `interactive` and `adopt` make sites too, so they sit in the same list. They never stop a site that's running: they say which one is, and leave switching to you.
+`demo`, `interactive` and `adopt` make sites too, so they sit in the same list. They never stop a site that's running, and go ahead only where `up` would let one more store start.
 
 `bin/kapelos site remove acme` deletes a site: its containers, database, search index, snapshots and the files Kapelos keeps for it. Kapelos lists everything first and asks you to type the site's name. The store's code stays where it is, unless Kapelos downloaded it into `var/stores/`.
 
-**One site runs at a time in each Kapelos folder, and I built Kapelos that way on purpose.** A Magento stack wants several gigabytes of memory, and your computer is for the project in front of you. Switching is cheap instead: `use` stops the running site with its data kept, and the next `up` brings the other one back exactly as you left it. `up` refuses to start a second site from the same folder while one is running, and says which. A machine with the memory for it can run a second folder beside the first, one store each; [Two stores on one machine](#two-stores-on-one-machine) says how. If you need many stores running side by side, that's what [Emporion](https://github.com/kingletas/emporion) is for.
+**Several sites can run at once, as many as the machine has room for.** A Magento stack wants several gigabytes of memory, and your computer is for the project in front of you, so another store starts only while memory and load are left over; [Several stores at once](#several-stores-at-once) says how that's decided. Switching stays cheap: `use` makes another site the active one without stopping anything, `down SITE` stops one with its data kept, and the next `up` brings it back exactly as you left it. If you need many stores running side by side, that's what [Emporion](https://github.com/kingletas/emporion) is for.
 
 `.env` becomes a link to the active site's file, so `bin/kapelos`, `make` and plain `docker compose` always agree about which project they're working on. If you had a `.env` of your own, the first `use` turns it into a site called `default`, with nothing lost.
 
+## Several stores at once
+
+Sites from one folder run side by side. `use` only chooses which site plain commands act on, and nothing stops when you switch. Three things decide whether a store may start.
+
+**Room.** A first store always starts. Another starts only if, after the memory it used when it last ran, 8 GiB of the machine's memory stays free, and the machine's load over the last five minutes is under three quarters of its cores. Otherwise `up` refuses, with the numbers:
+
+```text
+kapelos: starting acme would leave 6.0 GiB of memory free: 12.0 GiB is free now, and it has never been measured, so it counts as 6 GiB. KAPELOS_RESERVE_GIB keeps 8 GiB free.
+Running now: demo
+Stop one with kapelos down SITE, in the folder it runs from
+```
+
+A site's memory is measured when `kapelos sites` runs while it's up, and when `kapelos down` stops it. One never measured counts as 6 GiB. `KAPELOS_RESERVE_GIB` sets the memory to keep free and `KAPELOS_MAX_LOAD` the load, and 0 turns either off. Both defaults are a starting point, not a measurement of any one machine. On a Mac the free memory comes from `vm_stat` and the load from `sysctl`, a path that hasn't been run on one yet.
+
+**Disk.** A store's database, search index and snapshots all live where Docker keeps its data, and a stopped store keeps what it has. So every start, the first one too, needs 20 GiB free there, and a snapshot is refused when its copy would leave less:
+
+```text
+kapelos: a snapshot of acme copies 31.0 GiB, which would leave 9.0 GiB free where Docker keeps its data (/var/lib/docker): 40.0 GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps 20 GiB free.
+kapelos snapshot delete NAME removes an old one
+```
+
+`KAPELOS_DISK_RESERVE_GIB` sets the amount, and 0 turns it off. The check sees a store start and a snapshot being taken, not a running store filling its database, so the reserve is what gives you time to notice. Docker Desktop keeps its data inside its own virtual machine, where Kapelos can't read the space left: there the check asks nothing, and `kapelos doctor` says so.
+
+**Ports.** Each site of a folder has its own block of ports. `kapelos env SITE` gives a new site the first block no other site here uses, and `--slot N` picks one; the table in [Two stores on one machine](#two-stores-on-one-machine) lists them. A site made before blocks, on the default ports, moves with `kapelos site ports SITE`, which prints the commands that change the address in its store's database. `up` refuses a site whose ports a running site publishes, and names both. `kapelos info` shows the site's block.
+
+**Stopping.** `kapelos down SITE` stops one site and `kapelos stop-others` stops every one but the active site, both keeping their data. `kapelos sites` shows each site, whether it runs, the memory it uses or last used, and its storefront port.
+
+The work that fills every core, starting and installing stores, composer and `setup:upgrade`, takes turns; see [Heavy work takes turns](#heavy-work-takes-turns).
+
 ## Two stores on one machine
 
-A host with the memory for it can run a store from each of two Kapelos folders: two checkouts, each with its own `etc/sites`. Each folder still runs one site at a time. Two things have to differ between the folders.
+A host with the memory for it can also run stores from two Kapelos folders: two checkouts, each with its own `etc/sites`. Two things have to differ between the folders.
 
 **Ports.** Every site gets the same ports unless you say otherwise, so two running stores would both want 8080. `--slot` gives a site its own block, every port moved up by a hundred per slot:
 
@@ -247,18 +281,30 @@ bin/kapelos env acme --slot 1
 | 1 | 8180, 8181 to 8184 | 8543 | 13406 | 8125 | 9300 | 15772 | 35829 |
 | 2 | 8280, 8281 to 8284 | 8643 | 13506 | 8225 | 9400 | 15872 | 35929 |
 
-The site's `MAGENTO_BASE_URL` carries its own HTTP port, `http://acme.test:8180/` here. A hundred leaves room for the four [web servers](#more-web-servers-and-a-database-replica) above `HTTP_PORT`, and no two slots share a port. `env` refuses a slot whose ports would pass 65535, or land on another slot's. Give every site in one folder that folder's slot, and install each store with the address it will be reached at, since Magento redirects to the address in its database.
+The site's `MAGENTO_BASE_URL` carries its own HTTP port, `http://acme.test:8180/` here. A hundred leaves room for the four [web servers](#more-web-servers-and-a-database-replica) above `HTTP_PORT`, and no two slots share a port. `env` refuses a slot whose ports would pass 65535, or land on another slot's. Install each store with the address it will be reached at, since Magento redirects to the address in its database.
+
+**Nothing checks ports across folders in this release.** `env` and `site ports` pick the first block free in their own folder, so two folders left to choose both take slot 0, and `up` compares a site only with the running sites of its own folder. A port another folder's store holds is refused by Docker when the store starts, after its network and first containers are made. So name the slot for every site of all folders but one.
 
 **Site names.** Docker names a site's containers and volumes `kapelos-NAME` across the whole machine, so one name in two folders would share one set of containers and one database. `env NAME` refuses a name whose containers belong to another folder. Volumes don't record which folder made them, so it also refuses a name that has volumes and no container in this folder, and says how to remove them if they are this folder's own leftovers.
 
-**A limit across both folders.** The one-site-per-folder check can't see the other folder, so two folders could start as many stores as they like between them. Set a limit for the whole machine, in the environment of whoever runs Kapelos, or in each site's file:
+**A limit across both folders.** The room check under [Several stores at once](#several-stores-at-once) already counts every Kapelos store running on the machine, whichever folder started it. A fixed limit for the whole machine can be set as well, in the environment of whoever runs Kapelos, or in each site's file:
 
 ```bash
 export KAPELOS_MAX_RUNNING=2       # at most two Kapelos stores running on this Docker
 export KAPELOS_MEM_BUDGET_GIB=30   # and their declared memory limits add up to 30 GiB or less
 ```
 
-`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them, and then `up` checks only its own folder, as it always has.
+`up` then counts every Kapelos project running on the Docker daemon, whichever folder started it, and refuses a store that would pass either limit. It says what is running, from which folder, and how much memory each is allowed. The running stores' limits come from Docker, and this site's from Compose's resolved configuration, so Mailpit, cron and any scaled web servers count. **The budget counts declared limits only, so it is a floor on real use.** A container with no `mem_limit` counts as nothing, and the refusal says how many running ones have none. In `compose.yaml` today that is both Valkeys, the socket and debug web servers, and the three bots when their profiles are on. Both settings are unset unless you set them.
+
+## Heavy work takes turns
+
+A store that is up and idle costs little. What fills every core is the work around it: starting a store, installing one, `composer install`, `require` or `update`, `setup:upgrade`, a compile, a static deploy, a reindex, `adopt`, `import`, `deploy` and `self-test`. So those take turns, one at a time across every Kapelos folder you run on the machine, and everything else goes straight through. A command that has to wait says what it is waiting on, once, and again only if that changes:
+
+```text
+kapelos: waiting for a turn at heavy work, kapelos up for etc/sites/acme.env in /home/you/kapelos: busy with kapelos setup:upgrade for .env in /home/you/kapelos
+```
+
+`KAPELOS_HEAVY_AT_ONCE` lets more than one run at a time, and `KAPELOS_HEAVY_WAIT` is how many seconds a command waits before it gives up and says what the turn is still busy with; 0 means don't wait. A command that dies gives its turn back as it goes. One killed outright can't, so the next command finds the process that held the turn gone and takes it over, and says so. The turns live in a folder under your temporary directory, or in `KAPELOS_QUEUE_DIR` if you set it. It's a queue for load, not a lock on your data: at worst, two jobs run at once.
 
 ## Running a store you already have
 
@@ -832,7 +878,7 @@ bin/kapelos self-test
 
 I left these out on purpose. Each one would make Kapelos bigger, and [Emporion](https://github.com/kingletas/emporion) already does them:
 
-- **Many stores running at once.** Kapelos switches between projects instead, one running store per folder. Two folders on a machine with the memory can run one each; see [Two stores on one machine](#two-stores-on-one-machine).
+- **Many stores beyond what one machine holds.** Kapelos starts another store only while the machine has room for it; see [Several stores at once](#several-stores-at-once).
 - **No image of your application.** Your code is mounted, never built into an image.
 - **No Kubernetes.**
 

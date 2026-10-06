@@ -129,11 +129,12 @@ The store's code and its `app/etc/env.php` stay as they are. Kapelos lays its ow
 
 ```bash
 kapelos sites                 # the * is the active one
-kapelos use shop2             # stops acme, keeping its data
-kapelos up
+kapelos use shop2             # acme keeps running
+kapelos up                    # if the machine has room for a second store
+kapelos down acme             # stops acme, keeping its data
 ```
 
-Only one site runs at a time. The next `kapelos use acme` and `kapelos up` bring it back exactly as you left it.
+`kapelos up` starts another store only while the machine has room for it, and says why when it hasn't. The next `kapelos use acme` and `kapelos up` bring acme back exactly as you left it.
 
 ### Look inside the database and the caches
 

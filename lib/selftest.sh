@@ -116,6 +116,16 @@ cmd_check() {
     grep -v '^ok ' <<<"$tests_out" >&2
     die "tests/ports-and-guard failed"
   }
+  echo "many sites: room for another store, ports, use, down SITE, stop-others and sites, against a stand-in docker"
+  tests_out="$(tests/many-sites 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/many-sites failed"
+  }
+  echo "heavy queue: turns taken, waited for, given back and taken over, against a scratch queue"
+  tests_out="$(tests/heavy-queue 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/heavy-queue failed"
+  }
 
   echo "shipped commands: rollback and varnish-ban, against a stand-in kapelos and a throwaway git repository"
   tests_out="$(tests/shipped-commands 2>&1)" || {
@@ -144,7 +154,7 @@ cmd_check() {
   echo "shellcheck"
   # -a is what reaches lib/: -x alone follows a source for the names in it and reports nothing found inside.
   shellcheck -a -x bin/kapelos
-  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker
+  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker tests/heavy-queue tests/many-sites
   local command
   for command in share/commands/*; do
     # The lib folder beside them holds PHP and SQL, which check-image parses instead.
@@ -392,7 +402,8 @@ cmd_self_test() {
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/kapelos-self-test.XXXXXX")"
   ENV_FILE="$scratch/env"
   SELF_TEST_SCRATCH="$scratch"
-  trap 'compose down -v >/dev/null 2>&1; remove_self_test_volumes; rm -rf "$SELF_TEST_SCRATCH"' EXIT
+  # This replaces the queue's own trap, so the turn at heavy work is given back here too.
+  trap 'compose down -v >/dev/null 2>&1; remove_self_test_volumes; rm -rf "$SELF_TEST_SCRATCH"; heavy_turn_release' EXIT
   write_env "$ENV_FILE" \
     "COMPOSE_PROJECT_NAME=kapelos-self-test" \
     "MAGENTO_SRC=$scratch/magento" \

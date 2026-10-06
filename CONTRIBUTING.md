@@ -10,7 +10,7 @@ bin/kapelos check
 
 That's everything a commit has to pass. `make check` runs the same thing. `check` makes sure both compose layouts are valid, that a missing `MAGENTO_SRC` is refused, and that the scripts and YAML are clean. It needs Docker, `shellcheck` and `yamllint`.
 
-`check` also runs `tests/ports-and-guard`, which tests port slots, the limit across Kapelos folders and the one-name-per-folder check against a stand-in `docker`. It starts nothing, so it runs on its own without Docker too.
+`check` also runs `tests/ports-and-guard`, which tests port slots, the limit across Kapelos folders and the one-name-per-folder check against a stand-in `docker`. It starts nothing, so it runs on its own without Docker too. `tests/many-sites` tests several sites of one folder at once, the room check, ports, `use`, `down SITE`, `stop-others` and `sites`, against the same stand-in. `tests/heavy-queue` does the same for the queue for heavy work, with real processes taking, waiting for and abandoning turns in a scratch folder.
 
 If you changed the PHP image, run this too:
 

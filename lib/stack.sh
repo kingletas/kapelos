@@ -40,13 +40,225 @@ Stop one with kapelos down in its own folder first, or run this site with fewer 
   fi
 }
 
+# --- room for another store ----------------------------------------------
+# A first store always starts, as it always has. Another starts only if, after what it used when it last
+# ran, KAPELOS_RESERVE_GIB of memory stays free and the machine's five-minute load is under KAPELOS_MAX_LOAD.
+# Either set to 0 is off. The defaults are a first guess; the knee measured on a real host replaces them.
+DEFAULT_RESERVE_GIB=8
+# What a site that has never been measured counts as: a stack with sample data idles near this.
+UNMEASURED_SITE_GIB=6
+GIB_BYTES=1073741824
+# What must stay free where Docker keeps its data before a store starts or a snapshot is taken, in GiB.
+# It is the figure kapelos doctor warns under. 0 is off.
+DEFAULT_DISK_RESERVE_GIB=20
+
+# Memory this machine can still hand out, in bytes. Linux says so directly. On macOS free, inactive and
+# speculative pages can all be handed out; that path was written without a Mac to try it on.
+host_available_bytes() {
+  local meminfo="${KAPELOS_MEMINFO:-/proc/meminfo}" page
+  if [[ -r $meminfo ]]; then
+    awk '$1 == "MemAvailable:" { printf "%.0f\n", $2 * 1024; found = 1 } END { exit !found }' "$meminfo"
+    return
+  fi
+  page="$(sysctl -n hw.pagesize 2>/dev/null)" || return 1
+  vm_stat 2>/dev/null | awk -v page="$page" '
+    /^Pages (free|inactive|speculative):/ { gsub(/\./, "", $NF); pages += $NF }
+    END { if (pages > 0) printf "%.0f\n", pages * page; else exit 1 }'
+}
+
+# The five-minute load average: sustained work, not a moment's burst.
+host_load() {
+  local loadavg="${KAPELOS_LOADAVG:-/proc/loadavg}"
+  if [[ -r $loadavg ]]; then
+    awk '{ print $2 }' "$loadavg"
+    return
+  fi
+  # macOS prints { 1.20 1.45 1.67 }.
+  sysctl -n vm.loadavg 2>/dev/null | awk '{ print $3 }' | grep .
+}
+
+host_cores() {
+  getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1
+}
+
+footprint_file() {
+  printf '%s/footprint' "$(site_state_dir_of "$1")"
+}
+
+# The memory a project's running containers use now, in bytes, as docker stats reports it.
+project_memory_now() {
+  local ids
+  ids="$(docker ps -q --filter "label=com.docker.compose.project=$1" 2>/dev/null)" || return 1
+  [[ -n $ids ]] || return 1
+  # shellcheck disable=SC2086 # one word per container
+  docker stats --no-stream --format '{{.MemUsage}}' $ids 2>/dev/null | awk '
+    {
+      v = $1; n = v + 0; unit = v
+      sub(/^[0-9.]+/, "", unit)
+      if (unit == "KiB" || unit == "kB") n *= 1024
+      else if (unit == "MiB" || unit == "MB") n *= 1048576
+      else if (unit == "GiB" || unit == "GB") n *= 1073741824
+      total += n
+    }
+    END { printf "%.0f\n", total }'
+}
+
+# Keeps what a running site uses, so the next start of it is admitted against a real number.
+record_footprint() {
+  local bytes file
+  bytes="$(project_memory_now "$1")" || return 0
+  [[ $bytes =~ ^[0-9]+$ && $bytes -gt 0 ]] || return 0
+  file="$(footprint_file "$1")"
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$bytes" >"$file"
+}
+
+recorded_footprint() {
+  local bytes
+  bytes="$(cat "$(footprint_file "$1")" 2>/dev/null)" || return 1
+  [[ $bytes =~ ^[0-9]+$ ]] && printf '%s' "$bytes"
+}
+
+require_room_for_another() {
+  local current="$1" others reserve max_load cores available need load said
+  reserve="${KAPELOS_RESERVE_GIB:-$DEFAULT_RESERVE_GIB}"
+  cores="$(host_cores)"
+  max_load="${KAPELOS_MAX_LOAD:-$(awk -v c="$cores" 'BEGIN { printf "%g\n", c * 0.75 }')}"
+  [[ $reserve =~ ^[0-9]{1,5}$ ]] || die "KAPELOS_RESERVE_GIB is $reserve, and it takes the whole GiB of memory to keep free, 0 for no reserve"
+  [[ $max_load =~ ^[0-9]{1,4}([.][0-9]+)?$ ]] || die "KAPELOS_MAX_LOAD is $max_load, and it takes a load average such as 6 or 5.5, 0 for no limit"
+  # In base ten whatever it looks like: bash reads 08 as an octal number that doesn't exist, and 020 as 16.
+  reserve=$((10#$reserve))
+  [[ $reserve != 0 || $max_load != 0 ]] || return 0
+  others="$(daemon_kapelos_containers | awk -v me="$current" '$1 != me { print $1 }' | sort -u | sed 's/^kapelos-//' | tr '\n' ' ')"
+  [[ -n $others ]] || return 0
+  if [[ $reserve -gt 0 ]]; then
+    if available="$(host_available_bytes)"; then
+      if need="$(recorded_footprint "$current")"; then
+        said="it used $(gib "$need") GiB when it last ran"
+      else
+        need=$((UNMEASURED_SITE_GIB * GIB_BYTES))
+        said="it has never been measured, so it counts as $UNMEASURED_SITE_GIB GiB"
+      fi
+      [[ $((available - need)) -ge $((reserve * GIB_BYTES)) ]] ||
+        die "starting ${current#kapelos-} would leave $(gib $((available - need))) GiB of memory free: $(gib "$available") GiB is free now, and $said. KAPELOS_RESERVE_GIB keeps $reserve GiB free.
+Running now: $others
+Stop one with kapelos down SITE, in the folder it runs from"
+    else
+      echo "kapelos: can't read how much memory this machine has free, so the reserve isn't checked" >&2
+    fi
+  fi
+  [[ $max_load != 0 ]] || return 0
+  if ! load="$(host_load)"; then
+    echo "kapelos: can't read this machine's load, so KAPELOS_MAX_LOAD isn't checked" >&2
+    return 0
+  fi
+  awk -v l="$load" -v m="$max_load" 'BEGIN { exit !(l > m) }' || return 0
+  die "this machine's load over the last five minutes is $load, over KAPELOS_MAX_LOAD=$max_load on $cores cores, so ${current#kapelos-} waits for it to settle.
+Running now: $others"
+}
+
+# Where Docker keeps its images, volumes and snapshots, when this machine can see the folder. Docker Desktop
+# keeps it inside its own virtual machine, and there this answers nothing.
+docker_data_dir() {
+  local root
+  root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)" || return 1
+  [[ -n $root && -d $root ]] || return 1
+  printf '%s' "$root"
+}
+
+# Bytes free on the filesystem a folder is on.
+free_bytes_in() {
+  df -Pk "$1" 2>/dev/null | awk 'NR == 2 { printf "%.0f\n", $4 * 1024; found = 1 } END { exit !found }'
+}
+
+disk_reserve_gib() {
+  local reserve="${KAPELOS_DISK_RESERVE_GIB:-$DEFAULT_DISK_RESERVE_GIB}"
+  [[ $reserve =~ ^[0-9]{1,6}$ ]] || die "KAPELOS_DISK_RESERVE_GIB is $reserve, and it takes the whole GiB of disk to keep free where Docker keeps its data, 0 for no reserve"
+  # In base ten whatever it looks like: bash reads 08 as an octal number that doesn't exist, and 020 as 16.
+  printf '%s' "$((10#$reserve))"
+}
+
+# A store's database, search index and snapshots all live where Docker keeps its data, and a stopped store keeps
+# what it has, so this is asked of every start, the first one too. Where that folder can't be read it asks
+# nothing and says nothing: kapelos doctor is where that is said.
+require_disk_room_to_start() {
+  local site="${1#kapelos-}" reserve root free
+  reserve="$(disk_reserve_gib)" || exit 1
+  [[ $reserve -gt 0 ]] || return 0
+  root="$(docker_data_dir)" || return 0
+  free="$(free_bytes_in "$root")" || return 0
+  [[ $free -ge $((reserve * GIB_BYTES)) ]] ||
+    die "starting $site needs room where Docker keeps its data ($root): $(gib "$free") GiB is free there, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
+kapelos snapshot lists this site's snapshots, and docker system df shows what else is there"
+}
+
+# The bytes a volume holds, measured the way a snapshot copies it.
+volume_bytes() {
+  docker run --rm -v "$1:/from:ro" alpine du -sk /from 2>/dev/null | awk '{ printf "%.0f\n", $1 * 1024; found = 1 } END { exit !found }'
+}
+
+# A snapshot is a second copy of the database, the search index and the queue, so it is refused when that copy
+# would eat into the reserve.
+require_disk_room_for_snapshot() {
+  local site="${COMPOSE_PROJECT_NAME#kapelos-}" reserve root free volume bytes need=0
+  reserve="$(disk_reserve_gib)" || exit 1
+  [[ $reserve -gt 0 ]] || return 0
+  root="$(docker_data_dir)" || return 0
+  free="$(free_bytes_in "$root")" || return 0
+  for volume in $SNAPSHOT_VOLUMES; do
+    if ! bytes="$(volume_bytes "${COMPOSE_PROJECT_NAME}_$volume")"; then
+      echo "kapelos: can't measure $volume, so the disk reserve isn't checked for this snapshot" >&2
+      return 0
+    fi
+    need=$((need + bytes))
+  done
+  [[ $need -le $free ]] ||
+    die "a snapshot of $site copies $(gib "$need") GiB, more than the $(gib "$free") GiB free where Docker keeps its data ($root).
+kapelos snapshot delete NAME removes an old one"
+  [[ $((free - need)) -ge $((reserve * GIB_BYTES)) ]] ||
+    die "a snapshot of $site copies $(gib "$need") GiB, which would leave $(gib $((free - need))) GiB free where Docker keeps its data ($root): $(gib "$free") GiB is free now, and KAPELOS_DISK_RESERVE_GIB keeps $reserve GiB free.
+kapelos snapshot delete NAME removes an old one"
+}
+
+# A site can't start beside a running site of this folder that publishes one of the same ports.
+require_ports_free() {
+  local current="$1" project file key mine theirs
+  for project in $(running_projects); do
+    [[ $project != "$current" ]] || continue
+    file="$(site_of_project "$project")"
+    [[ -n $file ]] || continue
+    for key in $PORT_KEYS; do
+      mine="${!key:-$(env_value .env.example "$key")}"
+      theirs="$(env_value "$file" "$key")"
+      [[ -n $theirs ]] || theirs="$(env_value .env.example "$key")"
+      [[ $mine != "$theirs" ]] ||
+        die "${current#kapelos-} and ${project#kapelos-}, which is running, both publish $key on $mine. Stop it with kapelos down ${project#kapelos-}, or give one of them its own ports with kapelos site ports SITE"
+    done
+  done
+}
+
+# The info line for this site's ports: its slot and every port in it, or the ports as set by hand.
+site_block_words() {
+  local slot
+  if slot="$(slot_of_site "$(follow_link "$ENV_FILE")")"; then
+    printf 'slot %s: HTTP %s (and the four above it for more web servers), HTTPS %s, MariaDB %s, Mailpit %s, OpenSearch %s, RabbitMQ %s, LiveReload %s' \
+      "$slot" "${HTTP_PORT:-8080}" "${HTTPS_PORT:-8443}" "${DB_PORT:-13306}" "${MAIL_UI_PORT:-8025}" "${OPENSEARCH_PORT:-9200}" "${RABBITMQ_UI_PORT:-15672}" "${LIVERELOAD_PORT:-35729}"
+  else
+    printf 'set by hand, off the slots: HTTP %s, HTTPS %s, MariaDB %s' "${HTTP_PORT:-8080}" "${HTTPS_PORT:-8443}" "${DB_PORT:-13306}"
+  fi
+}
+
 # docker compose --wait gives up at once on a container still marked unhealthy from before, so restart those once and wait again.
 cmd_up() {
   load_env
-  local current other
+  local current
   current="${COMPOSE_PROJECT_NAME:-kapelos}"
-  other="$(running_projects | grep -vx "$current" | head -n 1 || true)"
-  [[ -z $other ]] || die "$other is already running, and Kapelos runs one site at a time. Switch with kapelos use, or stop it with: docker compose -p $other down"
+  # A site already up is being told about a change to its settings, not started.
+  if ! running_projects | grep -qx "$current"; then
+    require_ports_free "$current"
+    require_room_for_another "$current"
+    require_disk_room_to_start "$current"
+  fi
   require_room_on_daemon "$current"
 
   # An adopted site whose adopt stopped part way starts and serves its own env.php, which
@@ -173,6 +385,7 @@ cmd_snapshot() {
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot save NAME"
       valid_snapshot_name "$name"
       [[ -z $(snapshot_names | grep -x "$name" || true) ]] || die "there's already a snapshot called $name. kapelos snapshot delete $name removes it"
+      require_disk_room_for_snapshot
       step "Pausing the database, search and queue so the copy is consistent"
       compose stop db opensearch rabbitmq
       created="$(date '+%Y-%m-%d %H:%M')"
@@ -409,6 +622,7 @@ cmd_info() {
 
   Site         $site, $state. Settings in $(follow_link "$ENV_FILE")
   Code         ${MAGENTO_SRC:-not set}
+  Ports        $(site_block_words)
 
   Store        ${MAGENTO_BASE_URL:-not set}
   Admin        ${MAGENTO_BASE_URL%/}/${MAGENTO_ADMIN_URI:-admin}

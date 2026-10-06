@@ -2,16 +2,18 @@
 # shellcheck shell=bash
 
 cmd_env() {
-  local name="" slot=0 pairs=() key
+  local name="" slot="" slot_given=no pairs=() key
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --slot)
         [[ $# -ge 2 ]] || die "--slot takes a number, for example: kapelos env acme --slot 1"
         slot="$2"
+        slot_given=yes
         shift 2
         ;;
       --slot=*)
         slot="${1#--slot=}"
+        slot_given=yes
         shift
         ;;
       -*) die "env doesn't know $1. See: kapelos help" ;;
@@ -22,6 +24,12 @@ cmd_env() {
         ;;
     esac
   done
+  # A named site with no --slot takes the first block no other site here uses, so the first is still slot 0.
+  if [[ $slot_given == no ]]; then
+    slot=0
+    [[ -z $name ]] || slot="$(first_free_slot "$SITES_DIR/$name.env")"
+    [[ $slot == 0 ]] || echo "Slot 0's ports are taken by another site here, so $name gets slot $slot."
+  fi
   require_port_slot "$slot"
   for key in $PORT_KEYS; do
     pairs+=("$key=$(slot_port "$key" "$slot")")
@@ -100,6 +108,81 @@ One name in two folders shares one set of containers and one database. Pick anot
 Another Kapelos folder may have a site called $1 parked. Pick another name, or, if they are left from a site of this folder, remove them with: docker volume rm $volumes"
 }
 
+# The slot a site file's ports are in, from its HTTP_PORT; nothing for ports set by hand off the grid.
+slot_of_site() {
+  local port base
+  port="$(env_value "$1" HTTP_PORT)"
+  base="$(env_value .env.example HTTP_PORT)"
+  [[ -n $port ]] || port="$base"
+  [[ $port =~ ^[0-9]+$ && $port -ge $base && $(((port - base) % PORT_SLOT_STRIDE)) -eq 0 ]] || return 1
+  printf '%s' "$(((port - base) / PORT_SLOT_STRIDE))"
+}
+
+# The lowest slot no site of this folder other than SKIP uses.
+first_free_slot() {
+  local skip="${1:-}" used="" file slot
+  for file in "$SITES_DIR"/*.env; do
+    [[ -f $file && $file != "$skip" ]] || continue
+    slot="$(slot_of_site "$file")" && used="$used $slot "
+  done
+  slot=0
+  while [[ $used == *" $slot "* ]]; do slot=$((slot + 1)); done
+  printf '%s' "$slot"
+}
+
+# Moves a site to a block of ports of its own: the slot named, or the first one no other site of this folder
+# uses. The store's own addresses in its database still carry the old port, so it prints what changes those.
+site_ports() {
+  local name="" slot="" file project other old_url new_url old_http new_http key
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slot)
+        [[ $# -ge 2 ]] || die "--slot takes a number, for example: kapelos site ports acme --slot 1"
+        slot="$2"
+        shift 2
+        ;;
+      --slot=*)
+        slot="${1#--slot=}"
+        shift
+        ;;
+      -*) die "site ports doesn't know $1" ;;
+      *)
+        [[ -z $name ]] || die "site ports takes one site name, and got a second: $1"
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n $name ]] || die "name the site, for example: kapelos site ports acme, or kapelos site ports acme --slot 2"
+  valid_site_name "$name"
+  file="$SITES_DIR/$name.env"
+  [[ -f $file ]] || die "there's no site called $name. kapelos sites lists them"
+  project="$(env_value "$file" COMPOSE_PROJECT_NAME)"
+  ! running_projects | grep -qx "$project" || die "$name is running, and its ports can't change under it. Stop it first: kapelos down $name"
+  [[ -n $slot ]] || slot="$(first_free_slot "$file")"
+  require_port_slot "$slot"
+  for other in "$SITES_DIR"/*.env; do
+    [[ -f $other && $other != "$file" ]] || continue
+    [[ $(slot_of_site "$other" || true) != "$slot" ]] || die "slot $slot is $(basename "$other" .env)'s. Leave out --slot and $name gets the first free one"
+  done
+  old_url="$(env_value "$file" MAGENTO_BASE_URL)"
+  old_http="$(env_value "$file" HTTP_PORT)"
+  [[ -n $old_http ]] || old_http="$(env_value .env.example HTTP_PORT)"
+  for key in $PORT_KEYS; do
+    set_env_value "$file" "$key" "$(slot_port "$key" "$slot")"
+  done
+  new_http="$(slot_port HTTP_PORT "$slot")"
+  new_url="${old_url/:$old_http\//:$new_http/}"
+  set_env_value "$file" MAGENTO_BASE_URL "$new_url"
+  echo "$name is on slot $slot now: $(slot_block "$slot" | awk '$1 !~ /\+/ { printf "%s%s %s", sep, $1, $2; sep = ", " }')."
+  [[ $new_url != "$old_url" ]] || return 0
+  echo "Its store still has $old_url in its database. Once it is up, change that with:"
+  echo "  kapelos use $name && kapelos up"
+  echo "  kapelos magento config:set web/unsecure/base_url $new_url"
+  echo "  kapelos magento config:set web/secure/base_url $new_url"
+  echo "  kapelos magento cache:flush"
+}
+
 site_of_project() {
   local file
   for file in "$SITES_DIR"/*.env; do
@@ -142,8 +225,9 @@ adopt_plain_env() {
   echo "Your .env is now the site $name, in $SITES_DIR/$name.env."
 }
 
+# Each site, whether it runs, the memory it uses now or used when it last ran, and its storefront port.
 cmd_sites() {
-  local active="" file name project state marker found=0 running
+  local active="" file name project state marker found=0 running memory bytes port
   [[ -L .env ]] && active="$(readlink .env)"
   running="$(running_projects)"
   for file in "$SITES_DIR"/*.env; do
@@ -152,10 +236,19 @@ cmd_sites() {
     name="$(basename "$file" .env)"
     project="$(env_value "$file" COMPOSE_PROJECT_NAME)"
     state=stopped
-    grep -qx "$project" <<<"$running" && state=running
+    memory="-"
+    if grep -qx "$project" <<<"$running"; then
+      state=running
+      record_footprint "$project"
+    fi
+    if bytes="$(recorded_footprint "$project")"; then
+      memory="$(gib "$bytes") GiB"
+      [[ $state == running ]] || memory="($memory)"
+    fi
+    port="$(env_value "$file" HTTP_PORT)"
     marker=" "
     [[ $active == "$file" ]] && marker="*"
-    printf '%s %-20s %-8s %s\n' "$marker" "$name" "$state" "$(env_value "$file" MAGENTO_SRC)"
+    printf '%s %-20s %-8s %-11s %-6s %s\n' "$marker" "$name" "$state" "$memory" "${port:-8080}" "$(env_value "$file" MAGENTO_SRC)"
   done
   if [[ -f .env && ! -L .env ]]; then
     echo "  .env is a single site of its own. The first kapelos use turns it into a named site."
@@ -164,11 +257,9 @@ cmd_sites() {
   fi
 }
 
-# Setting a store up never stops a site that's running; only kapelos use switches away from one.
-require_free_to_switch() {
-  local command="$1" project="$2" other
-  other="$(running_projects | grep -vx "$project" | head -n 1 || true)"
-  [[ -z $other ]] || die "$other is running, and $command would have to stop it. Stop it with kapelos down, or switch with kapelos use"
+# Setting a store up stops nothing, so it goes ahead only where kapelos up would let the new store start.
+require_room_to_set_up() {
+  require_room_for_another "$1"
 }
 
 cmd_use() {
@@ -183,11 +274,42 @@ cmd_use() {
   [[ -f $target ]] || die "there's no site called $name. kapelos sites lists them, and kapelos env $name makes one"
   adopt_plain_env
   project="$(env_value "$target" COMPOSE_PROJECT_NAME)"
-  for running in $(running_projects); do
-    [[ $running == "$project" ]] || stop_project "$running"
-  done
   ln -sfn "$target" .env
-  [[ ${2:-} == quiet ]] || echo "Now on $name. Start it with: kapelos up"
+  [[ ${2:-} == quiet ]] && return 0
+  echo "Now on $name. Start it with: kapelos up"
+  running="$(running_projects | grep -vx "$project" | sed 's/^kapelos-//' | tr '\n' ' ' || true)"
+  [[ -z $running ]] || echo "Still running: ${running% }. kapelos down SITE stops one."
+}
+
+# Stops one site, or the active one, keeping its data. What it used goes on record first, for the next start.
+cmd_down() {
+  local name="${1:-}" file project
+  if [[ -z $name ]]; then
+    load_env
+    record_footprint "${COMPOSE_PROJECT_NAME:-kapelos}"
+    compose down
+    return
+  fi
+  valid_site_name "$name"
+  file="$SITES_DIR/$name.env"
+  [[ -f $file ]] || die "there's no site called $name. kapelos sites lists them"
+  project="$(env_value "$file" COMPOSE_PROJECT_NAME)"
+  record_footprint "$project"
+  stop_project "$project"
+}
+
+# Stops every running site of this folder but the active one.
+cmd_stop_others() {
+  local current project stopped=0
+  load_env
+  current="${COMPOSE_PROJECT_NAME:-kapelos}"
+  for project in $(running_projects); do
+    [[ $project != "$current" ]] || continue
+    record_footprint "$project"
+    stop_project "$project"
+    stopped=1
+  done
+  [[ $stopped -eq 1 ]] || echo "Nothing else is running."
 }
 
 store_codes() {
@@ -301,7 +423,11 @@ cmd_site() {
       site_remove "$@"
       return
       ;;
-    *) die "kapelos site audit [SITE] or kapelos site remove SITE" ;;
+    ports)
+      site_ports "$@"
+      return
+      ;;
+    *) die "kapelos site audit [SITE], kapelos site ports SITE [--slot N] or kapelos site remove SITE" ;;
   esac
   if [[ -n ${1:-} ]]; then
     valid_site_name "$1"
