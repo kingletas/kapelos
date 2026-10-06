@@ -56,6 +56,8 @@ SELF_TEST_FAILED=0
 . "$KAPELOS_HOME/lib/checks.sh"
 # shellcheck source=lib/tools.sh
 . "$KAPELOS_HOME/lib/tools.sh"
+# shellcheck source=lib/seed.sh
+. "$KAPELOS_HOME/lib/seed.sh"
 # shellcheck source=lib/commands.sh
 . "$KAPELOS_HOME/lib/commands.sh"
 # shellcheck source=lib/selftest.sh
@@ -141,6 +143,12 @@ Working in the store
                          The Composer repositories Kapelos knows: which the store uses, or add
                          and remove them, or list the packages one serves
   sample-data            Add Magento's sample products, for tools that need a catalogue
+  seed [PROFILE] [--no-snapshot]
+                         Fill the store to a profile's size with Magento's own generator, reindex,
+                         record what it cost and save a snapshot; with no profile, list them
+  seed reset PROFILE [-y]
+                         Put the store back to that profile's snapshot, without generating again
+  seed steps             What every seed of this site held, took on disk and cost in time and memory
   commands [add|remove] [NAME...] [--user] [-f]
                          The commands Kapelos ships for you to use and change: which are
                          installed, or put them in this store or in every store you work on
@@ -169,7 +177,7 @@ A command with a colon is Magento's; Kapelos's own commands never have one.
 Set KAPELOS_ENV to use a settings file other than .env for one command.
 Heavy work takes turns across every Kapelos folder on the machine: starting or installing a store,
 composer changing the tree, setup:upgrade, a compile, a deploy, a reindex, saving or restoring a
-snapshot and copying a site. KAPELOS_HEAVY_AT_ONCE
+snapshot, copying a site and seeding one. KAPELOS_HEAVY_AT_ONCE
 sets how many run at once (1), and KAPELOS_HEAVY_WAIT how many seconds one waits for its turn (3600).
 EOF
 }
@@ -220,6 +228,7 @@ main() {
     restart) compose restart "$@" ;;
     sample-data) cmd_sample_data ;;
     scale) cmd_scale "$@" ;;
+    seed) cmd_seed "$@" ;;
     self-test) cmd_self_test ;;
     shell) exec_php bash ;;
     site) cmd_site "$@" ;;

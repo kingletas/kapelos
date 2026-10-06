@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!-- kapelos: 5000 configurables, 5000 bundles, 10000 simples, 10000 customers, 25000 orders -->
+<!--
+    A mixed catalog for Magento's own generator, bin/magento setup:performance:generate-fixtures, which
+    kapelos seed runs. This is the 50% step of four. The generator adds only what the store lacks to
+    reach these numbers, so seed the steps in order and stop at the largest your machine holds.
+
+    Every configurable has twelve variants and every bundle twelve selections, each a simple product of
+    its own, so the store holds about 130000 simple products at this step.
+    Unlike Magento's own profiles, this one changes no setting of the admin's security.
+-->
+<config xmlns:xi="http://www.w3.org/2001/XInclude">
+    <profile>
+        <websites>2</websites>
+        <store_groups>2</store_groups>
+        <store_views>3</store_views>
+        <assign_entities_to_all_websites>1</assign_entities_to_all_websites>
+        <simple_products>10000</simple_products>
+        <configurable_products>
+            <config>
+                <attributes>
+                    <attribute>
+                        <options>3</options>
+                        <swatches>image</swatches>
+                    </attribute>
+                    <attribute>
+                        <options>4</options>
+                    </attribute>
+                </attributes>
+                <sku>Configurable Product %s</sku>
+                <products>5000</products>
+            </config>
+        </configurable_products>
+        <bundle_products>5000</bundle_products>
+        <bundle_products_options>3</bundle_products_options>
+        <bundle_products_variation>4</bundle_products_variation>
+        <product-images>
+            <images-count>500</images-count>
+            <images-per-product>2</images-per-product>
+        </product-images>
+        <categories>500</categories>
+        <categories_nesting_level>3</categories_nesting_level>
+        <customers>10000</customers>
+        <customer_groups>10</customer_groups>
+        <catalog_price_rules>20</catalog_price_rules>
+        <cart_price_rules>20</cart_price_rules>
+        <cart_price_rules_floor>2</cart_price_rules_floor>
+        <coupon_codes>20</coupon_codes>
+        <product_attribute_sets>10</product_attribute_sets>
+        <product_attribute_sets_attributes>5</product_attribute_sets_attributes>
+        <product_attribute_sets_attributes_values>5</product_attribute_sets_attributes_values>
+        <tax_rates_file>tax_rates.csv</tax_rates_file>
+        <tax_rules>10</tax_rules>
+        <order_quotes_enable>true</order_quotes_enable>
+        <order_simple_product_count_from>1</order_simple_product_count_from>
+        <order_simple_product_count_to>3</order_simple_product_count_to>
+        <order_configurable_product_count_from>0</order_configurable_product_count_from>
+        <order_configurable_product_count_to>2</order_configurable_product_count_to>
+        <orders>25000</orders>
+        <configs>
+            <config>
+                <path>carriers/flatrate/active</path>
+                <scope>default</scope>
+                <scopeId>0</scopeId>
+                <value>1</value>
+            </config>
+        </configs>
+    </profile>
+</config>

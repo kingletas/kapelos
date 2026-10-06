@@ -11,8 +11,8 @@ heavy_queue_dir() {
 }
 
 # Whether a command is heavy work: yes for starting, installing, composer changing the tree, saving or
-# restoring a snapshot, copying a site, and the Magento commands that rebuild the database, the code or
-# the indexes. A command with a colon is Magento's.
+# restoring a snapshot, copying a site, seeding one or putting a seed back, and the Magento commands that
+# rebuild the database, the code or the indexes. A command with a colon is Magento's.
 heavy_command() {
   local command="${1:-}" first="${2:-}"
   case "$command" in
@@ -20,6 +20,7 @@ heavy_command() {
     modules) [[ $first == add || $first == remove ]] ;;
     snapshot) [[ $first == save || $first == restore ]] ;;
     site) [[ $first == copy ]] ;;
+    seed) [[ -n $first && $first != list && $first != steps ]] ;;
     composer)
       case "$first" in install | require | update | remove | reinstall | upgrade | create-project) return 0 ;; esac
       return 1

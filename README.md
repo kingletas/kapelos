@@ -31,6 +31,7 @@ A *kapelos* was the small shopkeeper of an ancient Greek town. His bigger siblin
 - [The Kingletas modules](#the-kingletas-modules)
 - [Emptying every cache](#emptying-every-cache)
 - [Snapshots and dumps](#snapshots-and-dumps)
+- [A production-sized store](#a-production-sized-store)
 - [Rehearsing a deployment](#rehearsing-a-deployment)
 - [More web servers and a database replica](#more-web-servers-and-a-database-replica)
 - [Running the store's tests](#running-the-stores-tests)
@@ -210,6 +211,7 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `KAPELOS_HEAVY_AT_ONCE`, `KAPELOS_HEAVY_WAIT` | `1`, `3600` | How many heavy jobs run at once across the machine, and how many seconds one waits for its turn. See [Heavy work takes turns](#heavy-work-takes-turns) |
 | `XDEBUG_MODE` | `debug` | What Xdebug does in the debugging container. See [Xdebug](#xdebug) |
 | `SNAPSHOT_KEEP` | `3` | How many snapshots a series keeps when `--keep` isn't given. See [Snapshots and dumps](#snapshots-and-dumps) |
+| `SEED_SNAPSHOT_KEEP` | `1` | How many snapshots `bin/kapelos seed` keeps of each profile it has seeded. See [A production-sized store](#a-production-sized-store) |
 | `SNAPSHOT_BEFORE_DEPLOY` | `0` | How many snapshots `bin/kapelos deploy` keeps of the store as it was before each deploy; 0 takes none. See [Rehearsing a deployment](#rehearsing-a-deployment) |
 | `DISPOSABLE` | `no` | `yes` lets bluetir and drexbot place orders and register accounts. `demo` and `interactive` set it |
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
@@ -621,6 +623,27 @@ bin/kapelos db import store.sql.gz   # the same as bin/kapelos import
 ```
 
 A dump or snapshot of a store you brought holds its customers too. Dumps are written readable only by you.
+
+## A production-sized store
+
+A demo catalogue hides what a real one shows: a category page over a few thousand products, a reindex that takes minutes, a search index that no longer fits in memory. `seed` fills a store to a profile's size with Magento's own generator, `setup:performance:generate-fixtures`, which writes most of its rows as SQL in batches and so is far quicker than importing:
+
+```bash
+bin/kapelos seed                     # the profiles: Kapelos's own, and Magento's in this store
+bin/kapelos seed mixed-10            # generate, reindex, record what it cost, save a snapshot
+bin/kapelos seed steps               # what every seed of this site held and cost
+bin/kapelos seed reset mixed-10      # the store as it was right after that seed; asks first, -y doesn't
+```
+
+**The first seed is slow and every reset after it is a restore.** `seed` saves the seeded store as a snapshot in a series named for the profile, `seed-mixed-10`, and `seed reset` puts the newest of that series back, so a test that leaves the store in a state starts from the same store the next time without generating anything. A store with no snapshot at all gets one called `before-seed` first, which is the way back to the store as it was. `--no-snapshot` skips both.
+
+**Kapelos ships four profiles, each a step toward the last.** `mixed-100` is 10,000 configurable products with twelve variants each, 10,000 bundles of twelve selections each, 20,000 simple products, 20,000 customers and 50,000 orders, over two websites and three store views, with customer groups, catalogue and cart price rules, coupons and tax rules. `mixed-10`, `mixed-25` and `mixed-50` are that at a tenth, a quarter and a half. **The generator adds only what the store lacks to reach a profile's numbers**, so seed them in order and stop at the largest your machine holds; every variant and every bundle selection is a product of its own, so the last step is over a quarter of a million products. Magento's own profiles, `small`, `medium`, `medium_msite`, `large` and `extra_large`, work by name too. Unlike those, Kapelos's change no setting of the admin's security.
+
+**`seed steps` is how you find where to stop.** Each seed adds a line: how long generating and reindexing took, how many simple, configurable and bundle products, categories, customers and orders the database now counts, what the database, the search index, the queue and the media folder take on disk, and the most memory the PHP, database and search containers have held since they started. Disk is usually the first wall: the store, plus one snapshot per profile you keep, plus one more while a new one is being copied. `SEED_SNAPSHOT_KEEP` sets how many snapshots of one profile are kept, 1 unless you say.
+
+Two things the generator does not do, as of Magento 2.4.9: **every order it writes is dated the moment it was generated, and every one is new and pending**, with no invoice, shipment or refund. A sales report over a seeded store has one very busy day.
+
+Seeding and putting a seed back take a turn at [heavy work](#heavy-work-takes-turns), like a reindex.
 
 ## Rehearsing a deployment
 

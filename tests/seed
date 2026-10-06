@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# A store filled from a profile: kapelos seed finds the profile, saves a way back for a store that has none,
+# runs Magento's generator and then a reindex, records what the store holds and what it cost, and saves a
+# snapshot that seed reset puts back. Offline: docker is tests/stub-docker, and the steps that need a running
+# store are stood in for.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+
+mkdir -p "$SCRATCH/bin"
+cp "$ROOT/tests/stub-docker" "$SCRATCH/bin/docker"
+export PATH="$SCRATCH/bin:$PATH"
+export STUB_DOCKER="$SCRATCH/docker"
+export KAPELOS_MEMINFO="$SCRATCH/meminfo" KAPELOS_LOADAVG="$SCRATCH/loadavg"
+export LOG="$SCRATCH/log"
+unset KAPELOS_RESERVE_GIB KAPELOS_MAX_LOAD KAPELOS_MAX_RUNNING KAPELOS_MEM_BUDGET_GIB KAPELOS_DISK_RESERVE_GIB KAPELOS_ENV
+unset SEED_SNAPSHOT_KEEP KAPELOS_HEAVY_TURN
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+# The reverse of grep -q: passes when no line matches.
+lacks() {
+  ! grep -q -- "$@"
+}
+
+# Passes when the command fails and says the words expected.
+refused() {
+  local expect="$1" out
+  shift
+  out="$("$@" 2>&1)" && return 1
+  grep -qF -- "$expect" <<<"$out"
+}
+
+reset_docker() {
+  rm -rf "$STUB_DOCKER"
+  mkdir -p "$STUB_DOCKER"
+  : >"$STUB_DOCKER/containers"
+  : >"$STUB_DOCKER/volumes"
+  : >"$STUB_DOCKER/calls"
+  : >"$STUB_DOCKER/compose-config"
+  printf 'kapelos-shop_db-data|2097152\nkapelos-shop_opensearch-data|524288\nkapelos-shop_rabbitmq-data|10240\n' >"$STUB_DOCKER/volume-kib"
+  : >"$LOG"
+}
+
+# A snapshot of a site as the stub keeps it: three volumes, each carrying its name and when it was saved.
+saved_snapshot() {
+  local site="$1" name="$2" created="$3" volume
+  for volume in db-data opensearch-data rabbitmq-data; do
+    echo "kapelos-${site}_snapshot-$name-$volume||kapelos-$site|$name|$created" >>"$STUB_DOCKER/volumes"
+  done
+}
+
+reset_docker
+printf 'MemAvailable: %s kB\n' $((64 * 1024 * 1024)) >"$KAPELOS_MEMINFO"
+echo "0.00 0.00 0.00 1/100 1" >"$KAPELOS_LOADAVG"
+A="$SCRATCH/a"
+STORE="$SCRATCH/store"
+mkdir -p "$A" "$STORE/app/etc" "$STORE/.kapelos"
+echo "<?php return ['invented' => true];" >"$STORE/app/etc/env.php"
+cp -R "$ROOT/bin" "$ROOT/lib" "$ROOT/share" "$ROOT/.env.example" "$ROOT/compose.yaml" "$A/"
+A="$(cd -P "$A" && pwd)"
+kapelos() { (cd "$A" && bin/kapelos "$@"); }
+kapelos env shop >/dev/null
+sed -i.bak "s|^MAGENTO_SRC=.*|MAGENTO_SRC=$STORE|" "$A/etc/sites/shop.env"
+rm -f "$A/etc/sites/shop.env.bak"
+RECORD="$A/var/seed/kapelos-shop.tsv"
+IN_STORE="$SCRATCH/profile-in-store"
+
+# One Kapelos function in a process of its own, as bin/kapelos runs it. What needs a running store answers from
+# here instead: the generator and the reindex write a line in $LOG, a profile piped into the store lands in
+# $IN_STORE, and the database, the media folder and each container's peak memory give fixed numbers.
+cat >"$SCRATCH/run" <<RUN
+set -euo pipefail
+cd "$A"
+KAPELOS_HOME="$A"
+ENV_FILE="\${KAPELOS_ENV:-.env}"
+SITES_DIR=etc/sites
+STORES_DIR=var/stores
+SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
+PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
+PORT_SLOT_STRIDE=100
+PROJECT_KEYS="MARIADB_VERSION"
+. lib/core.sh
+. lib/queue.sh
+. lib/sites.sh
+. lib/store.sh
+. lib/stack.sh
+. lib/scale.sh
+. lib/seed.sh
+cmd_up() { echo "up \$ENV_FILE" >>"\$LOG"; }
+require_running() { :; }
+clear_cache_files() { echo "cache files" >>"\$LOG"; }
+compose_exec() { echo "exec \$*" >>"\$LOG"; }
+magento() { echo "magento \$*" >>"\$LOG"; }
+compose() {
+  if [[ "\$*" == "ps --status running --services" ]]; then
+    [[ \${STUB_STORE_DOWN:-no} == yes ]] || printf 'php\ndb\nopensearch\n'
+  else
+    docker compose "\$@"
+  fi
+}
+exec_php_no_xdebug() {
+  echo "php \$*" >>"\$LOG"
+  [[ "\$*" != *"\${STUB_PHP_FAILS:-no step fails}"* ]]
+}
+db_root() { printf '26000\t1000\t1000\t100\t2000\t5000\n'; }
+exec_quiet() {
+  local service="\$1"
+  shift
+  case "\$service \$*" in
+    "php test -f app/etc/env.php") [[ \${STUB_NOT_INSTALLED:-no} == no ]] ;;
+    "php sh -c mkdir"*)
+      cat >"$IN_STORE"
+      echo "profile put at \$5/\$6.xml" >>"\$LOG"
+      ;;
+    "php test -f setup/performance-toolkit/profiles/ce/medium_msite.xml") return 0 ;;
+    "php test -f "*) return 1 ;;
+    "php sh -c for f in setup"*) printf 'medium\nmedium_msite\n' ;;
+    "php du -sk pub/media") printf '3072\tpub/media\n' ;;
+    "php cat /sys/fs/cgroup/memory.peak") echo 2147483648 ;;
+    "db cat /sys/fs/cgroup/memory.peak") echo 1073741824 ;;
+    "opensearch cat /sys/fs/cgroup/memory.peak") return 1 ;;
+    "php php -r"*) : ;;
+    *)
+      echo "the test's exec_quiet has no answer for: \$service \$*" >&2
+      return 2
+      ;;
+  esac
+}
+"\$@"
+RUN
+
+run_on() {
+  local site="$1"
+  shift
+  KAPELOS_ENV="etc/sites/$site.env" bash "$SCRATCH/run" "$@"
+}
+
+heavy() {
+  bash -c ". '$A/lib/queue.sh'; heavy_command \"\$@\"" heavy "$@"
+}
+
+# --- heavy work --------------------------------------------------------------
+
+check "seeding a store takes a turn at heavy work" heavy seed mixed-10
+check "and so does putting a seed back" heavy seed reset
+check "listing the profiles doesn't" bash -c "! (. '$A/lib/queue.sh'; heavy_command seed)"
+check "nor asking for them by name" bash -c "! (. '$A/lib/queue.sh'; heavy_command seed list)"
+check "nor reading the record" bash -c "! (. '$A/lib/queue.sh'; heavy_command seed steps)"
+
+# --- the first seed of a store with no snapshot ---------------------------------
+
+out="$(run_on shop cmd_seed mixed-10)"
+check "a profile Kapelos ships is put in the store whole" cmp -s "$ROOT/share/seed/mixed-10.xml" "$IN_STORE"
+check "where the generator is told to read it" grep -qx "profile put at var/kapelos-seed/mixed-10.xml" "$LOG"
+check "a store with no snapshot gets one first, to go back to" grep -q "^kapelos-shop_snapshot-before-seed-db-data|" "$STUB_DOCKER/volumes"
+generated="$(grep -n "bin/magento setup:performance:generate-fixtures --skip-reindex var/kapelos-seed/mixed-10.xml$" "$LOG" | cut -d: -f1)"
+reindexed="$(grep -n "bin/magento indexer:reindex$" "$LOG" | cut -d: -f1)"
+saved_before="$(grep -n "^up etc/sites/shop.env$" "$LOG" | sed -n 1p | cut -d: -f1)"
+check "Magento's generator runs on that profile, leaving the reindex to kapelos" test -n "$generated"
+check "after the way back is saved" test "${saved_before:-999}" -lt "${generated:-0}"
+check "the reindex follows the generator" test "${generated:-999}" -lt "${reindexed:-0}"
+check "with no memory limit on either" test "$(grep -c "^php php -d memory_limit=-1 bin/magento " "$LOG")" -eq 2
+check "every cache is emptied afterwards" grep -qx "cache files" "$LOG"
+series="$(sed -n 's/^Saved \(seed-mixed-10-[0-9]\{8\}-[0-9]\{6\}\)\..*/\1/p' <<<"$out")"
+check "the seeded store is saved in a series named for the profile" test -n "$series"
+check "its three volumes are made" test "$(grep -c "^kapelos-shop_snapshot-$series-" "$STUB_DOCKER/volumes")" -eq 3
+check "it says how to put the store back" grep -q "kapelos seed reset mixed-10 puts the store back to this" <<<"$out"
+
+check "the record starts with what each column is" grep -q "^when	profile	generate_s	reindex_s	simples	configurables	bundles	categories	customers	orders	db_mib	search_mib	queue_mib	media_mib	php_peak_mib	db_peak_mib	search_peak_mib$" "$RECORD"
+row="$(sed -n 2p "$RECORD")"
+check "a seed adds one line" test "$(grep -c . "$RECORD")" -eq 2
+check "naming the profile" test "$(cut -f 2 <<<"$row")" = mixed-10
+check "with how long generating and reindexing took, in seconds" grep -qE '^[0-9]+	[0-9]+$' <<<"$(cut -f 3,4 <<<"$row")"
+check "what the store holds, as the database counts it" test "$(cut -f 5-10 <<<"$row")" = "26000	1000	1000	100	2000	5000"
+check "what the database, the search index and the queue take on disk, in MiB" test "$(cut -f 11-13 <<<"$row")" = "2048	512	10"
+check "and the media folder" test "$(cut -f 14 <<<"$row")" = 3
+check "the most memory PHP and the database have held" test "$(cut -f 15,16 <<<"$row")" = "2048	1024"
+check "and a dash where a container doesn't say" test "$(cut -f 17 <<<"$row")" = "-"
+
+out="$(run_on shop cmd_seed steps)"
+check "seed steps shows the record" grep -q "mixed-10" <<<"$out"
+check "with its heading" grep -q "^when " <<<"$out"
+
+# --- growing, and a profile seeded again --------------------------------------
+
+: >"$LOG"
+before="$(grep -c "snapshot-before-seed-" "$STUB_DOCKER/volumes")"
+run_on shop cmd_seed mixed-25 >/dev/null
+check "a store that has a snapshot gets no second way back" test "$(grep -c "snapshot-before-seed-" "$STUB_DOCKER/volumes")" -eq "$before"
+check "a larger profile is seeded over the smaller one" grep -q "generate-fixtures --skip-reindex var/kapelos-seed/mixed-25.xml$" "$LOG"
+check "and adds its own line to the record" test "$(cut -f 2 "$RECORD" | tr '\n' ' ')" = "profile mixed-10 mixed-25 "
+check "the smaller profile's snapshot stays" grep -q "^kapelos-shop_snapshot-$series-db-data|" "$STUB_DOCKER/volumes"
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+saved_snapshot shop seed-mixed-10-20260110-020000 "2026-01-10 02:00:00"
+out="$(run_on shop cmd_seed mixed-10)"
+check "a profile seeded again keeps only its newest snapshot" lacks "seed-mixed-10-20260110-020000" "$STUB_DOCKER/volumes"
+check "and says which one went" grep -q "Deleted seed-mixed-10-20260110-020000: seed-mixed-10 keeps its newest 1." <<<"$out"
+check "a snapshot of another name is left alone" grep -q "^kapelos-shop_snapshot-clean-db-data|" "$STUB_DOCKER/volumes"
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+saved_snapshot shop seed-mixed-10-20260110-020000 "2026-01-10 02:00:00"
+SEED_SNAPSHOT_KEEP=2 run_on shop cmd_seed mixed-10 >/dev/null
+check "SEED_SNAPSHOT_KEEP keeps more of them" grep -q "^kapelos-shop_snapshot-seed-mixed-10-20260110-020000-db-data|" "$STUB_DOCKER/volumes"
+check "a SEED_SNAPSHOT_KEEP that is no count is refused" refused "SEED_SNAPSHOT_KEEP is 0" env SEED_SNAPSHOT_KEEP=0 KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+
+# --- Magento's own profiles -----------------------------------------------------
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+rm -f "$IN_STORE"
+out="$(run_on shop cmd_seed medium_msite)"
+check "one of Magento's own profiles is read where Magento keeps it" grep -q "generate-fixtures --skip-reindex setup/performance-toolkit/profiles/ce/medium_msite.xml$" "$LOG"
+check "and nothing is put in the store for it" test ! -e "$IN_STORE"
+check "its series is named with dashes, as a snapshot's name is" grep -q "^Saved seed-medium-msite-[0-9]\{8\}-[0-9]\{6\}\." <<<"$out"
+
+# --- no snapshot, and what is refused ---------------------------------------------
+
+reset_docker
+out="$(run_on shop cmd_seed mixed-10 --no-snapshot)"
+check "--no-snapshot seeds and saves nothing" lacks "volume create" "$STUB_DOCKER/calls"
+check "and says how to take one" grep -q "with no snapshot: kapelos snapshot save NAME takes one" <<<"$out"
+check "it still generates" grep -q "generate-fixtures" "$LOG"
+
+reset_docker
+lines="$(grep -c . "$RECORD")"
+check "a profile nobody ships is refused" refused "there's no profile called nope" run_on shop cmd_seed nope
+check "a name that is no profile's is refused" refused "a profile's name uses lowercase letters" run_on shop cmd_seed ../../etc/passwd
+check "an option seed doesn't know is refused" refused "seed doesn't know --fast" run_on shop cmd_seed mixed-10 --fast
+check "an option where the profile goes is refused" refused "seed takes a profile's name first" run_on shop cmd_seed --no-snapshot
+check "a store that isn't installed is refused" refused "the store isn't installed yet" env STUB_NOT_INSTALLED=yes KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+check "none of them generated anything" lacks "generate-fixtures" "$LOG"
+check "or saved anything" lacks "volume create" "$STUB_DOCKER/calls"
+
+check "a snapshot Docker wouldn't make is found out before generating, not after" refused "Docker wouldn't start the small container" \
+  env STUB_RUN_REFUSED="Minimum memory limit allowed is 6MB" KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+check "so nothing is generated for it" lacks "generate-fixtures" "$LOG"
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+check "a generator that fails ends the seed" refused "" env STUB_PHP_FAILS=generate-fixtures KAPELOS_ENV=etc/sites/shop.env bash "$SCRATCH/run" cmd_seed mixed-10
+check "before any reindex" lacks "indexer:reindex" "$LOG"
+check "with nothing added to the record" test "$(grep -c . "$RECORD")" -eq "$lines"
+check "and no snapshot of a half-made store" lacks "snapshot-seed-" "$STUB_DOCKER/volumes"
+
+# --- putting a seed back ------------------------------------------------------------
+
+reset_docker
+saved_snapshot shop seed-mixed-10-20260110-020000 "2026-01-10 02:00:00"
+saved_snapshot shop seed-mixed-10-20260112-020000 "2026-01-12 02:00:00"
+saved_snapshot shop seed-mixed-25-20260113-020000 "2026-01-13 02:00:00"
+run_on shop cmd_seed reset mixed-10 -y >/dev/null
+check "seed reset restores the newest snapshot of that profile" \
+  grep -q -- "-v kapelos-shop_snapshot-seed-mixed-10-20260112-020000-db-data:/from:ro -v kapelos-shop_db-data:/to" "$STUB_DOCKER/calls"
+check "and never another profile's" lacks "seed-mixed-25-20260113-020000-db-data:/from" "$STUB_DOCKER/calls"
+check "it generates nothing" lacks "generate-fixtures" "$LOG"
+check "a profile never seeded here has nothing to go back to" refused "this site has no snapshot of mixed-50 to go back to" run_on shop cmd_seed reset mixed-50 -y
+check "reset wants the profile named" refused "name the profile to go back to" run_on shop cmd_seed reset -y
+
+# --- the list, and an empty record --------------------------------------------------
+
+out="$(run_on shop cmd_seed)"
+check "with nothing after it, seed lists Kapelos's profiles with what each holds" grep -qE "^  mixed-10 +1000 configurables, 1000 bundles, 2000 simples, 2000 customers, 5000 orders$" <<<"$out"
+check "all four of them" test "$(grep -c "^  mixed-" <<<"$out")" -eq 4
+check "and Magento's own, from the running store" grep -q "^Magento's own, in this store: medium medium_msite $" <<<"$out"
+out="$(STUB_STORE_DOWN=yes run_on shop cmd_seed list)"
+check "a stopped store says when Magento's own are listed" grep -q "Magento's own are listed once the store is up" <<<"$out"
+
+rm -f "$RECORD"
+out="$(run_on shop cmd_seed steps)"
+check "a site never seeded says so" grep -q "No seed of this site is on record yet" <<<"$out"
+
+echo
+if [[ $FAILURES -gt 0 ]]; then
+  echo "$FAILURES failed"
+  exit 1
+fi
+echo "all passed"
