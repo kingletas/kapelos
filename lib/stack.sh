@@ -219,6 +219,17 @@ helper_run() {
   docker run "${limits[@]}" "$@"
 }
 
+# Starts one helper container that does nothing, before anything is stopped or copied: a limit of the right
+# shape can still be one Docker refuses, a memory limit under its minimum for one, and finding that out after
+# a store's database was stopped would leave it stopped.
+require_helper_starts() {
+  local said
+  require_helper_limits
+  said="$(helper_run alpine true 2>&1)" ||
+    die "Docker wouldn't start the small container that measures and copies volumes, so nothing was stopped or copied. It runs under KAPELOS_HELPER_MEMORY, KAPELOS_HELPER_CPUS and KAPELOS_HELPER_CGROUP_PARENT, and Docker said:
+$said"
+}
+
 # The bytes a volume holds, measured the way a snapshot copies it.
 volume_bytes() {
   helper_run -v "$1:/from:ro" alpine du -sk /from 2>/dev/null | awk '{ printf "%.0f\n", $1 * 1024; found = 1 } END { exit !found }'
@@ -479,7 +490,7 @@ cmd_snapshot() {
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot save NAME"
       valid_snapshot_name "$name"
       [[ -z $(snapshot_names | grep -x "$name" || true) ]] || die "there's already a snapshot called $name. kapelos snapshot delete $name removes it"
-      require_helper_limits
+      require_helper_starts
       require_disk_room_for_snapshot
       step "Pausing the database, search and queue so the copy is consistent"
       compose stop db opensearch rabbitmq
@@ -502,7 +513,7 @@ cmd_snapshot() {
       fi
       [[ -n $name ]] || die "name the snapshot: kapelos snapshot restore NAME, or --latest for the newest. kapelos snapshot lists them"
       [[ -n $(snapshot_names | grep -x "$name" || true) ]] || die "there's no snapshot called $name. kapelos snapshot lists them"
-      require_helper_limits
+      require_helper_starts
       confirm "Replace this site's database, search index and queue with the snapshot $name? What's there now is lost unless you save it first." "$yes" || exit 1
       step "Stopping the database, search and queue"
       compose stop db opensearch rabbitmq
