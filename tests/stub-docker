@@ -2,7 +2,9 @@
 # A stand-in for docker that answers from files in $STUB_DOCKER, logs every call, and starts nothing.
 # containers holds id|project|folder|memory|state lines, with an optional sixth field for the bytes in use that
 # docker stats reports; volumes holds name|project|snapshot-project lines, with the snapshot's name and when it
-# was saved as a fourth and fifth field, and compose-config is what docker compose config prints. data-root,
+# was saved as a fourth and fifth field, and compose-config is what docker compose config prints. networks,
+# when it is there, holds name|project lines for the networks docker network ls finds; with STUB_NETWORK_KEPT
+# set, docker compose down fails the way Docker does when it will not let go of that network. data-root,
 # when it is there, holds the folder docker info names as Docker's own, and volume-kib holds name|KiB lines for
 # what du finds in a volume. A volume made or removed is added to volumes or taken out of it.
 set -euo pipefail
@@ -23,6 +25,11 @@ unexpected() {
 
 stub_ps() {
   local all=no quiet=no filter="" format="" id project folder memory state usage
+  # With STUB_PS_FAILS set, docker ps cannot answer, as when the daemon stops between two commands.
+  if [[ -n ${STUB_PS_FAILS:-} ]]; then
+    echo "Cannot connect to the Docker daemon" >&2
+    exit 1
+  fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -a) all=yes ;;
@@ -220,11 +227,25 @@ case "${1:-}" in
       *) unexpected volume "$action" "$@" ;;
     esac
     ;;
+  network)
+    # docker network ls --filter label=com.docker.compose.project=P --format 'network {{.Name}}'
+    [[ ${2:-} == ls && ${3:-} == --filter && ${4:-} == label=com.docker.compose.project=* && ${5:-} == --format ]] ||
+      unexpected "$@"
+    [[ -f $STUB_DOCKER/networks ]] || exit 0
+    while IFS='|' read -r name project; do
+      [[ $project == "${4#*project=}" ]] && echo "network $name"
+    done <"$STUB_DOCKER/networks"
+    exit 0
+    ;;
   compose)
     for arg in "$@"; do
       if [[ $arg == config ]]; then
         cat "$STUB_DOCKER/compose-config"
         exit 0
+      fi
+      if [[ $arg == down && -n ${STUB_NETWORK_KEPT:-} ]]; then
+        echo "Error response from daemon: error while removing network: network $STUB_NETWORK_KEPT has active endpoints" >&2
+        exit 1
       fi
       # Stopping, and making a site's containers and volumes, are logged in calls, which is all a test needs of them.
       case "$arg" in down | stop | create) exit 0 ;; esac
