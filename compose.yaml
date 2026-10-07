@@ -273,7 +273,10 @@ services:
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      # Docker runs this as root. On a new volume, whichever of it and the server starts first makes the Erlang
+      # cookie; made here it is root's, the server can't read it, and the first boot crashes. So this asks
+      # nothing until the server has made the cookie.
+      test: ["CMD-SHELL", "[ -f /var/lib/rabbitmq/.erlang.cookie ] && rabbitmq-diagnostics -q ping"]
       interval: 15s
       timeout: 10s
       retries: 5
