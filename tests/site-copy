@@ -432,10 +432,17 @@ check "a removal Docker left a network behind says so by its exit code" test "$s
 check "it still deletes the code" test ! -e "$A/var/stores/shop-capped"
 check "and the settings" test ! -e "$A/etc/sites/shop-capped.env"
 check "and the site's snapshots" lacks "^kapelos-shop-capped_snapshot-" "$STUB_DOCKER/volumes"
+check "it says the rest is gone" grep -q "^Removed shop-capped, all but what Docker kept:$" <<<"$out"
 check "it names the network Docker kept" grep -q "^  network kapelos-shop-capped_default$" <<<"$out"
 check "and says when that goes" grep -q "goes when Docker restarts" <<<"$out"
 check "it doesn't call that a plain removal" lacks "^Removed shop-capped\.$" <<<"$out"
 rm -f "$STUB_DOCKER/networks"
+
+# A docker that cannot say whether a container is left is not read as none being left.
+out="$(STUB_NETWORK_KEPT=kapelos-shop-behind_default STUB_PS_FAILS=yes kapelos site remove shop-behind -y 2>&1)" && status=0 || status=$?
+check "a removal that can't ask Docker about containers stops" test "$status" -ne 0
+check "with the code still in place" test -d "$A/var/stores/shop-behind"
+check "and the settings" test -f "$A/etc/sites/shop-behind.env"
 
 # A container Docker would not remove may be running from the code, so nothing is taken from under it.
 running stuck shop-behind 0

@@ -369,7 +369,7 @@ cmd_stores() {
 
 # Removes a site: its containers, database, search index, snapshots and generated files. A store's code stays, unless Kapelos downloaded or copied it.
 site_remove() {
-  local name="" yes=no file project code volumes reply volume kept
+  local name="" yes=no file project code volumes reply volume kept remaining
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -y) yes=yes ;;
@@ -402,7 +402,9 @@ site_remove() {
   # so a refusal here doesn't end the removal: whatever Docker kept is named at the end.
   COMPOSE_PROFILES='*' docker compose --progress quiet --env-file "$file" down -v --remove-orphans || true
   # A container that is still there may be running from this code, so nothing more is taken from under it.
-  [[ -z $(docker ps -a -q --filter "label=com.docker.compose.project=$project") ]] ||
+  # Asked on a line of its own: a docker that can't answer ends the command here, and is not read as no containers.
+  remaining="$(docker ps -a -q --filter "label=com.docker.compose.project=$project")"
+  [[ -z $remaining ]] ||
     die "Docker wouldn't remove $name's containers, so its volumes, code and settings are where they were. docker ps -a --filter label=com.docker.compose.project=$project lists them, and this command finishes once they are gone"
   # Snapshots aren't part of the compose project, and a scaled site's copies and replica aren't in compose.yaml, so down -v leaves them.
   { docker volume ls -q --filter "label=kapelos.snapshot.project=$project"; docker volume ls -q --filter "label=com.docker.compose.project=$project"; } | while IFS= read -r volume; do
@@ -424,7 +426,7 @@ site_remove() {
   rm -f "$file"
   kept="$(site_left_in_docker "$project")"
   if [[ -n $kept ]]; then
-    echo "Removed $name: its containers, code, settings and everything Kapelos keeps for it. Docker kept:"
+    echo "Removed $name, all but what Docker kept:"
     while IFS= read -r volume; do
       echo "  $volume"
     done <<<"$kept"

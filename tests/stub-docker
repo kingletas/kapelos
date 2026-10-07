@@ -25,6 +25,11 @@ unexpected() {
 
 stub_ps() {
   local all=no quiet=no filter="" format="" id project folder memory state usage
+  # With STUB_PS_FAILS set, docker ps cannot answer, as when the daemon stops between two commands.
+  if [[ -n ${STUB_PS_FAILS:-} ]]; then
+    echo "Cannot connect to the Docker daemon" >&2
+    exit 1
+  fi
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -a) all=yes ;;
