@@ -237,9 +237,9 @@ bin/kapelos sites             # lists them, with a * on the active one
 
 `demo`, `interactive` and `adopt` make sites too, so they sit in the same list. They never stop a site that's running, and go ahead only where `up` would let one more store start.
 
-`bin/kapelos site remove acme` deletes a site: its containers, database, search index, snapshots and the files Kapelos keeps for it. Kapelos lists everything first and asks you to type the site's name. The store's code stays where it is, unless Kapelos downloaded or copied it into `var/stores/`.
+`bin/kapelos site remove acme` deletes a site: its containers, database, search index, snapshots, the image Kapelos built for it and the files Kapelos keeps for it. Kapelos lists everything first and asks you to type the site's name. The store's code stays where it is, unless Kapelos downloaded or copied it into `var/stores/`.
 
-**Docker can keep something of a removed site.** Now and then it refuses to remove a network that nothing is attached to, saying it has active endpoints, and only a restart of Docker clears that. `site remove` doesn't stop there: it removes everything else, lists what Docker kept by name, says how that goes, and exits non-zero so a script can tell it from a clean removal. The one thing it stops at is a container Docker would not remove, since that container may be running from the site's code: then the code, the volumes and the settings stay where they are, and the same command finishes once the container is gone.
+**Docker can keep something of a removed site.** Now and then it refuses to remove a network that nothing is attached to, saying it has active endpoints, and only a restart of Docker clears that. It also refuses to remove an image a container still uses. `site remove` doesn't stop there: it removes everything else, lists what Docker kept by name, says how that goes, and exits non-zero so a script can tell it from a clean removal. The one thing it stops at is a container Docker would not remove, since that container may be running from the site's code: then the code, the volumes and the settings stay where they are, and the same command finishes once the container is gone.
 
 ### A copy of a store, to break
 

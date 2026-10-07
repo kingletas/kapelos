@@ -456,6 +456,33 @@ mv "$STUB_DOCKER/containers.new" "$STUB_DOCKER/containers"
 out="$(kapelos site remove shop-behind -y 2>&1)" && status=0 || status=$?
 check "once the container is gone the same command finishes" test "$status" -eq 0 -a ! -e "$A/etc/sites/shop-behind.env"
 check "and says it removed the site" grep -q "^Removed shop-behind\.$" <<<"$out"
+check "a site with no image of its own says nothing of one" lacks "its image" <<<"$out"
+
+# The image Kapelos built for a site is named for it, so it goes with the site, under every tag it has.
+{
+  echo "kapelos-shop-old-php:8.3"
+  echo "kapelos-shop-old-php:8.4"
+  echo "kapelos-shop-php:8.4"
+  echo "kapelos-shop-old-extra-php:8.4"
+} >"$STUB_DOCKER/images"
+out="$(kapelos site remove shop-old -y 2>&1)" && status=0 || status=$?
+check "removing a site lists its image among what goes" grep -qx "  its image: kapelos-shop-old-php:8.3 kapelos-shop-old-php:8.4 " <<<"$out"
+check "and removes it under every tag" lacks "^kapelos-shop-old-php:" "$STUB_DOCKER/images"
+check "another site's image stays" grep -qx "kapelos-shop-php:8.4" "$STUB_DOCKER/images"
+check "and so does one whose name only starts the same" grep -qx "kapelos-shop-old-extra-php:8.4" "$STUB_DOCKER/images"
+check "with nothing left, it is a plain removal" test "$status" -eq 0
+check "and says so" grep -q "^Removed shop-old\.$" <<<"$out"
+
+# An image a container still uses is one Docker refuses to remove. The site goes all the same, and the image is named.
+run_on shop cmd_site copy shop shop-tag --snapshot clean >/dev/null 2>&1
+echo "kapelos-shop-tag-php:8.4" >>"$STUB_DOCKER/images"
+out="$(STUB_IMAGE_KEPT=kapelos-shop-tag-php:8.4 kapelos site remove shop-tag -y 2>&1)" && status=0 || status=$?
+check "a removal Docker left an image behind says so by its exit code" test "$status" -ne 0
+check "the site is still removed: its code" test ! -e "$A/var/stores/shop-tag"
+check "and its settings" test ! -e "$A/etc/sites/shop-tag.env"
+check "it names the image Docker kept" grep -q "^  image kapelos-shop-tag-php:8.4$" <<<"$out"
+check "and says how that one goes" grep -q "docker image rm NAME an image once no container does" <<<"$out"
+check "it doesn't call that a plain removal" lacks "^Removed shop-tag\.$" <<<"$out"
 
 echo
 if [[ $FAILURES -eq 0 ]]; then
