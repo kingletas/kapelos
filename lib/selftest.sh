@@ -31,6 +31,16 @@ cmd_check() {
     die "compose accepted a stack with no MAGENTO_SRC"
   fi
 
+  echo "compose: RabbitMQ's health check asks nothing before the server has made its cookie"
+  docker compose --env-file "$scratch/env" -f compose.yaml config --format json >"$scratch/config.json"
+  python3 - "$scratch/config.json" <<'PY' || die "RabbitMQ's health check runs its command without first asking whether /var/lib/rabbitmq/.erlang.cookie is there. Docker runs the check as root, and on a new volume a check that gets there before the server makes a cookie the server can't read, so the store's first start fails"
+import json, sys
+test = json.load(open(sys.argv[1]))["services"]["rabbitmq"]["healthcheck"]["test"]
+command = test[-1] if test[0] == "CMD-SHELL" else ""
+guard, _, rest = command.partition("&&")
+sys.exit(0 if "-f /var/lib/rabbitmq/.erlang.cookie" in guard and "rabbitmq-diagnostics" in rest else 1)
+PY
+
   echo "project: a store's allowed settings are read, and STORES becomes nginx's map"
   mkdir -p "$scratch/store/.kapelos/commands"
   write_env "$scratch/env-project" "MAGENTO_SRC=$scratch/store" "COMPOSE_PROJECT_NAME=kapelos-check-project" "PROXY_NETWORK=proxy"
