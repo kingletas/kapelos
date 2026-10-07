@@ -424,6 +424,32 @@ check "removing a copy deletes its code too" test ! -e "$A/var/stores/shop-scrat
 check "and its settings" test ! -e "$A/etc/sites/shop-scratch.env"
 check "and leaves the site it was copied from" test -f "$A/etc/sites/shop.env" -a -f "$STORE/app/etc/env.php"
 
+# Docker can keep a network nothing is attached to until it restarts. The removal takes everything else and says so.
+snapshot shop-capped kept-test "2026-01-12 02:00:00"
+echo "kapelos-shop-capped_default|kapelos-shop-capped" >"$STUB_DOCKER/networks"
+out="$(STUB_NETWORK_KEPT=kapelos-shop-capped_default kapelos site remove shop-capped -y 2>&1)" && status=0 || status=$?
+check "a removal Docker left a network behind says so by its exit code" test "$status" -ne 0
+check "it still deletes the code" test ! -e "$A/var/stores/shop-capped"
+check "and the settings" test ! -e "$A/etc/sites/shop-capped.env"
+check "and the site's snapshots" lacks "^kapelos-shop-capped_snapshot-" "$STUB_DOCKER/volumes"
+check "it names the network Docker kept" grep -q "^  network kapelos-shop-capped_default$" <<<"$out"
+check "and says when that goes" grep -q "goes when Docker restarts" <<<"$out"
+check "it doesn't call that a plain removal" lacks "^Removed shop-capped\.$" <<<"$out"
+rm -f "$STUB_DOCKER/networks"
+
+# A container Docker would not remove may be running from the code, so nothing is taken from under it.
+running stuck shop-behind 0
+out="$(STUB_NETWORK_KEPT=kapelos-shop-behind_default kapelos site remove shop-behind -y 2>&1)" && status=0 || status=$?
+check "a removal that leaves a container stops there" test "$status" -ne 0
+check "with the code still in place" test -d "$A/var/stores/shop-behind"
+check "and the settings" test -f "$A/etc/sites/shop-behind.env"
+check "and says what to look at" grep -q "Docker wouldn't remove shop-behind's containers" <<<"$out"
+grep -v "^stuck|" "$STUB_DOCKER/containers" >"$STUB_DOCKER/containers.new" || true
+mv "$STUB_DOCKER/containers.new" "$STUB_DOCKER/containers"
+out="$(kapelos site remove shop-behind -y 2>&1)" && status=0 || status=$?
+check "once the container is gone the same command finishes" test "$status" -eq 0 -a ! -e "$A/etc/sites/shop-behind.env"
+check "and says it removed the site" grep -q "^Removed shop-behind\.$" <<<"$out"
+
 echo
 if [[ $FAILURES -eq 0 ]]; then
   echo "all passed"

@@ -369,7 +369,7 @@ cmd_stores() {
 
 # Removes a site: its containers, database, search index, snapshots and generated files. A store's code stays, unless Kapelos downloaded or copied it.
 site_remove() {
-  local name="" yes=no file project code volumes reply volume
+  local name="" yes=no file project code volumes reply volume kept
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -y) yes=yes ;;
@@ -398,10 +398,15 @@ site_remove() {
     [[ $reply == "$name" ]] || die "nothing removed"
   fi
   # Every profile is on, so a service whose profile was switched off after it started is removed too.
-  COMPOSE_PROFILES='*' docker compose --progress quiet --env-file "$file" down -v --remove-orphans
+  # Docker can refuse to let go of a network nothing is attached to, and only a restart of Docker clears that,
+  # so a refusal here doesn't end the removal: whatever Docker kept is named at the end.
+  COMPOSE_PROFILES='*' docker compose --progress quiet --env-file "$file" down -v --remove-orphans || true
+  # A container that is still there may be running from this code, so nothing more is taken from under it.
+  [[ -z $(docker ps -a -q --filter "label=com.docker.compose.project=$project") ]] ||
+    die "Docker wouldn't remove $name's containers, so its volumes, code and settings are where they were. docker ps -a --filter label=com.docker.compose.project=$project lists them, and this command finishes once they are gone"
   # Snapshots aren't part of the compose project, and a scaled site's copies and replica aren't in compose.yaml, so down -v leaves them.
   { docker volume ls -q --filter "label=kapelos.snapshot.project=$project"; docker volume ls -q --filter "label=com.docker.compose.project=$project"; } | while IFS= read -r volume; do
-    docker volume rm "$volume" >/dev/null
+    docker volume rm "$volume" >/dev/null || true
   done
   rm -rf "$(site_state_dir_of "$project")" "var/tools/$project"
   if [[ $code == "$KAPELOS_HOME/$STORES_DIR/"* ]]; then
@@ -417,7 +422,23 @@ site_remove() {
     echo "Your .env was this site, so it is gone too. kapelos sites lists the rest."
   fi
   rm -f "$file"
+  kept="$(site_left_in_docker "$project")"
+  if [[ -n $kept ]]; then
+    echo "Removed $name: its containers, code, settings and everything Kapelos keeps for it. Docker kept:"
+    while IFS= read -r volume; do
+      echo "  $volume"
+    done <<<"$kept"
+    echo "A network Docker says has active endpoints, with nothing attached, goes when Docker restarts; until then docker network rm NAME is refused. docker volume rm NAME removes a volume once nothing uses it."
+    exit 1
+  fi
   echo "Removed $name."
+}
+
+# What Docker still holds under a site's project name, one a line as "network NAME" or "volume NAME".
+site_left_in_docker() {
+  docker network ls --filter "label=com.docker.compose.project=$1" --format 'network {{.Name}}'
+  { docker volume ls -q --filter "label=com.docker.compose.project=$1"; docker volume ls -q --filter "label=kapelos.snapshot.project=$1"; } |
+    sed 's/^/volume /'
 }
 
 # Points a setting that names a file inside SOURCE's code, such as a store's own VCL, at the same file in the
