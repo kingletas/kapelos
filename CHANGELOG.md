@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- `kapelos check` reads the scripts with one version of ShellCheck on every machine, the one `etc/shellcheck.tsv` names, downloaded once into `var/bin` and run only if it matches the checksum recorded there, the way `kapelos ci` already gets act. Before, `check` used whichever `shellcheck` a machine had, so a change could pass where it was written and fail on the runner, which had an older one. `check` no longer needs a `shellcheck` installed, and needs the network the first time it runs.
+
 ## [0.2.0]: 2026-10-06
 
 - A new store's first `kapelos up` no longer fails on RabbitMQ. Docker runs a health check as root, and on a new volume a check that ran before the server made RabbitMQ's Erlang cookie made it root's; the server could not read it, crashed once and came back, and `up` had already given up. The check now asks nothing until the server has made the cookie. A second `kapelos up` finished the start each time it was tried, so nothing was lost; the first one now finishes by itself.

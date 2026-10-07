@@ -115,40 +115,66 @@ cmd_manipulus() {
   esac
 }
 
-# act is downloaded once and run only if it matches the checksum Kapelos records in etc/act.tsv.
-act_binary() {
-  local os arch platform version expected actual file tmp
+# This machine as etc/act.tsv and etc/shellcheck.tsv name it: Linux_x86_64, Darwin_arm64.
+host_platform() {
+  local os arch
   case "$(uname -s)" in
     Linux) os=Linux ;;
     Darwin) os=Darwin ;;
-    *) die "kapelos ci runs on Linux and macOS" ;;
+    *) die "Kapelos has pinned tools for Linux and macOS only" ;;
   esac
   case "$(uname -m)" in
     x86_64 | amd64) arch=x86_64 ;;
     aarch64 | arm64) arch=arm64 ;;
-    *) die "act has no build for $(uname -m)" ;;
+    *) die "Kapelos has no pinned tool for $(uname -m)" ;;
   esac
-  platform="${os}_$arch"
-  read -r version expected < <(grep -vE '^[[:space:]]*(#|$)' etc/act.tsv | awk -v p="$platform" '$2 == p { print $1, $3 }')
-  [[ -n ${expected:-} ]] || die "etc/act.tsv has no checksum for $platform"
-  file="var/bin/act-$version"
+  printf '%s_%s' "$os" "$arch"
+}
+
+# A pinned tool is downloaded once and run only if it matches the checksum Kapelos records in etc/NAME.tsv.
+# VERSION in the address, and in the archive member that is the tool, stands for the version that file names.
+pinned_binary() {
+  local name="$1" platform="$2" url="$3" member="$4" version expected actual file tmp
+  read -r version expected < <(grep -vE '^[[:space:]]*(#|$)' "etc/$name.tsv" | awk -v p="$platform" '$2 == p { print $1, $3 }')
+  [[ -n ${expected:-} ]] || die "etc/$name.tsv has no checksum for $platform"
+  file="var/bin/$name-$version"
   if [[ ! -x $file ]]; then
     require_tools curl tar
     mkdir -p var/bin
     tmp="$(mktemp -d)"
-    step "Downloading act $version for $platform" >&2
-    curl -fsSL -o "$tmp/act.tar.gz" "https://github.com/nektos/act/releases/download/$version/act_$platform.tar.gz"
-    actual="$({ sha256sum "$tmp/act.tar.gz" 2>/dev/null || shasum -a 256 "$tmp/act.tar.gz"; } | awk '{ print $1 }')"
+    step "Downloading $name $version for $platform" >&2
+    if ! curl -fsSL -o "$tmp/$name.tar.gz" "${url//VERSION/$version}"; then
+      rm -rf "$tmp"
+      die "$name $version couldn't be downloaded, and it is fetched once before it can run"
+    fi
+    actual="$(sha256_stdin <"$tmp/$name.tar.gz")"
     if [[ $actual != "$expected" ]]; then
       rm -rf "$tmp"
-      die "the act download doesn't match the checksum in etc/act.tsv, so it was thrown away"
+      die "the $name download doesn't match the checksum in etc/$name.tsv, so it was thrown away"
     fi
-    tar -xzf "$tmp/act.tar.gz" -C "$tmp" act
-    mv "$tmp/act" "$file"
+    member="${member//VERSION/$version}"
+    tar -xzf "$tmp/$name.tar.gz" -C "$tmp" "$member"
+    mv "$tmp/$member" "$file"
     chmod +x "$file"
     rm -rf "$tmp"
   fi
   printf '%s' "$KAPELOS_HOME/$file"
+}
+
+act_binary() {
+  local platform
+  platform="$(host_platform)"
+  pinned_binary act "$platform" "https://github.com/nektos/act/releases/download/VERSION/act_$platform.tar.gz" act
+}
+
+# ShellCheck's files spell the same machines linux.x86_64 and darwin.aarch64.
+shellcheck_binary() {
+  local platform theirs
+  platform="$(host_platform)"
+  theirs="$(tr '[:upper:]' '[:lower:]' <<<"${platform/_/.}")"
+  theirs="${theirs/arm64/aarch64}"
+  pinned_binary shellcheck "$platform" \
+    "https://github.com/koalaman/shellcheck/releases/download/VERSION/shellcheck-VERSION.$theirs.tar.gz" shellcheck-VERSION/shellcheck
 }
 
 # act copies the store into each job rather than mounting it, so a workflow can never change your files.

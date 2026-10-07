@@ -3,7 +3,7 @@
 # shellcheck disable=SC2016 # single-quoted code runs in a container's shell, which expands it
 
 cmd_check() {
-  require_tools docker shellcheck yamllint python3
+  require_tools docker yamllint python3
 
   CHECK_SCRATCH="$(mktemp -d)"
   trap 'rm -rf "$CHECK_SCRATCH"' EXIT
@@ -159,6 +159,12 @@ PY
     die "tests/php-module-check failed"
   }
 
+  echo "pinned tools: act and shellcheck kept only when the download matches its checksum, against a stand-in curl"
+  tests_out="$(tests/pinned-tools 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/pinned-tools failed"
+  }
+
   echo "kapelos: runs under bash 3.2, the version macOS ships"
   docker run --rm -v "$KAPELOS_HOME:/kapelos:ro" -w /kapelos bash:3.2 bash -c '
     set -e
@@ -171,15 +177,17 @@ PY
     cp -r /kapelos /tmp/k && cd /tmp/k && rm -f .env && bash bin/kapelos env >/dev/null && grep -q "^DB_PASSWORD=.\{32\}$" .env
   ' || die "bin/kapelos failed under bash 3.2"
 
-  echo "shellcheck"
+  # The version etc/shellcheck.tsv names, on every machine, so a pass here and a pass on the runner are the same pass.
+  local shellcheck command
+  shellcheck="$(shellcheck_binary)"
+  echo "shellcheck $("$shellcheck" --version | awk '$1 == "version:" { print $2 }'), the version etc/shellcheck.tsv names"
   # -a is what reaches lib/: -x alone follows a source for the names in it and reports nothing found inside.
-  shellcheck -a -x bin/kapelos
-  shellcheck packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker tests/heavy-queue tests/many-sites tests/site-copy tests/seed
-  local command
+  "$shellcheck" -a -x bin/kapelos
+  "$shellcheck" packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker tests/heavy-queue tests/many-sites tests/site-copy tests/seed tests/pinned-tools
   for command in share/commands/*; do
     # The lib folder beside them holds PHP and SQL, which check-image parses instead.
     if [[ -f $command ]]; then
-      shellcheck "$command"
+      "$shellcheck" "$command"
     fi
   done
 
