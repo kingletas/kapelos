@@ -369,7 +369,7 @@ cmd_stores() {
 
 # Removes a site: its containers, database, search index, snapshots and generated files. A store's code stays, unless Kapelos downloaded or copied it.
 site_remove() {
-  local name="" yes=no file project code volumes reply volume kept remaining
+  local name="" yes=no file project code volumes images image reply volume kept left remaining
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -y) yes=yes ;;
@@ -386,6 +386,8 @@ site_remove() {
   volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$project"; docker volume ls -q --filter "label=kapelos.snapshot.project=$project")"
   echo "Removing $name deletes, with no way back:"
   echo "  its containers, and these volumes: $(tr '\n' ' ' <<<"$volumes")"
+  images="$(site_images "$project")"
+  [[ -z $images ]] || echo "  its image: $(tr '\n' ' ' <<<"$images")"
   echo "  $file, $(site_state_dir_of "$project") and var/tools/$project"
   if [[ $code == "$KAPELOS_HOME/$STORES_DIR/"* ]]; then
     echo "  $code, the code Kapelos downloaded or copied for it"
@@ -410,6 +412,10 @@ site_remove() {
   { docker volume ls -q --filter "label=kapelos.snapshot.project=$project"; docker volume ls -q --filter "label=com.docker.compose.project=$project"; } | while IFS= read -r volume; do
     docker volume rm "$volume" >/dev/null || true
   done
+  # The list made before anything was removed. An image a container still uses is left, and named at the end.
+  while IFS= read -r image; do
+    [[ -z $image ]] || docker image rm "$image" >/dev/null || true
+  done <<<"$images"
   rm -rf "$(site_state_dir_of "$project")" "var/tools/$project"
   if [[ $code == "$KAPELOS_HOME/$STORES_DIR/"* ]]; then
     rm -f "$(project_trust_file "$code")"
@@ -427,20 +433,27 @@ site_remove() {
   kept="$(site_left_in_docker "$project")"
   if [[ -n $kept ]]; then
     echo "Removed $name, all but what Docker kept:"
-    while IFS= read -r volume; do
-      echo "  $volume"
+    while IFS= read -r left; do
+      echo "  $left"
     done <<<"$kept"
-    echo "A network Docker says has active endpoints, with nothing attached, goes when Docker restarts; until then docker network rm NAME is refused. docker volume rm NAME removes a volume once nothing uses it."
+    echo "A network Docker says has active endpoints, with nothing attached, goes when Docker restarts; until then docker network rm NAME is refused. docker volume rm NAME removes a volume once nothing uses it, and docker image rm NAME an image once no container does."
     exit 1
   fi
   echo "Removed $name."
 }
 
-# What Docker still holds under a site's project name, one a line as "network NAME" or "volume NAME".
+# The image Kapelos built for a site, under every tag it has, one NAME:TAG a line. compose.yaml names it for
+# the project, and the filter takes that repository whole, so a site whose name only starts the same is not matched.
+site_images() {
+  docker image ls --filter "reference=$1-php" --format '{{.Repository}}:{{.Tag}}'
+}
+
+# What Docker still holds under a site's project name, one a line as "network NAME", "volume NAME" or "image NAME".
 site_left_in_docker() {
   docker network ls --filter "label=com.docker.compose.project=$1" --format 'network {{.Name}}'
   { docker volume ls -q --filter "label=com.docker.compose.project=$1"; docker volume ls -q --filter "label=kapelos.snapshot.project=$1"; } |
     sed 's/^/volume /'
+  site_images "$1" | sed 's/^/image /'
 }
 
 # Points a setting that names a file inside SOURCE's code, such as a store's own VCL, at the same file in the

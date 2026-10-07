@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- `kapelos site remove` also removes the image Kapelos built for the site, `kapelos-NAME-php`, under every tag it has, and lists it among what goes. Before, each removed site left its image tag behind, so the list of images grew by one for every site made and removed. An image Docker won't remove, because a container still uses it, is named with whatever else Docker kept, and the site is removed all the same.
 - `kapelos check` reads the scripts with one version of ShellCheck on every machine, the one `etc/shellcheck.tsv` names, downloaded once into `var/bin` and run only if it matches the checksum recorded there, the way `kapelos ci` already gets act. Before, `check` used whichever `shellcheck` a machine had, so a change could pass where it was written and fail on the runner, which had an older one. `check` no longer needs a `shellcheck` installed, and needs the network the first time it runs.
 
 ## [0.2.0]: 2026-10-06
