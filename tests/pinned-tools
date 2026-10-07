@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# The tools Kapelos downloads at a pinned version, act and shellcheck: the address asked for on each machine,
+# a download kept only when it matches its checksum, and one that is kept not fetched twice. Offline: curl and
+# uname are stand-ins, the archive is made here, and nothing touches the network or Docker.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+refused() {
+  ! "$@"
+}
+
+# The stand-in curl writes the archive this test made to the file it was asked for, and records the address.
+mkdir -p "$SCRATCH/bin"
+cat >"$SCRATCH/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+while [[ $# -gt 1 ]]; do
+  [[ $1 == -o ]] && out="$2"
+  shift
+done
+echo "$1" >>"$ASKED"
+[[ -z ${STUB_CURL_FAILS:-} ]] || exit 22
+cp "$STUB_ARCHIVE" "$out"
+STUB
+cat >"$SCRATCH/bin/uname" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  -s) echo "$STUB_OS" ;;
+  -m) echo "$STUB_MACHINE" ;;
+esac
+STUB
+chmod +x "$SCRATCH/bin/curl" "$SCRATCH/bin/uname"
+export ASKED="$SCRATCH/asked" STUB_ARCHIVE="$SCRATCH/archive.tar.gz" STUB_OS=Linux STUB_MACHINE=x86_64
+
+# Each archive holds a tool that says which one it is, where the real release keeps its binary.
+mkdir -p "$SCRATCH/act" "$SCRATCH/shellcheck/shellcheck-v9.9.9"
+printf '#!/bin/sh\necho "act stand-in"\n' >"$SCRATCH/act/act"
+printf '#!/bin/sh\necho "version: 9.9.9"\n' >"$SCRATCH/shellcheck/shellcheck-v9.9.9/shellcheck"
+tar -czf "$SCRATCH/act.tar.gz" -C "$SCRATCH/act" act
+tar -czf "$SCRATCH/shellcheck.tar.gz" -C "$SCRATCH/shellcheck" shellcheck-v9.9.9/shellcheck
+
+sum_of() {
+  { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d ' ' -f 1
+}
+
+# A Kapelos folder of its own for each case, with the two libraries the download needs and a pin written here.
+kapelos_home() {
+  local home="$SCRATCH/$1"
+  mkdir -p "$home/etc"
+  printf 'v9.9.9\t%s\t%s\n' "$2" "$3" >"$home/etc/shellcheck.tsv"
+  printf 'v9.9.9\t%s\t%s\n' "$2" "$3" >"$home/etc/act.tsv"
+  : >"$ASKED"
+  printf '%s' "$home"
+}
+
+# Calls one of the download's functions in a Kapelos folder, the way bin/kapelos would have loaded it.
+in_home() {
+  local home="$1"
+  shift
+  (
+    cd "$home"
+    export KAPELOS_HOME="$home" PATH="$SCRATCH/bin:$PATH"
+    # shellcheck source=/dev/null # both are checked through bin/kapelos
+    . "$ROOT/lib/core.sh" && . "$ROOT/lib/tools.sh"
+    "$@"
+  )
+}
+
+kept_and_runs() {
+  local home file
+  home="$(kapelos_home kept Linux_x86_64 "$(sum_of "$SCRATCH/shellcheck.tar.gz")")"
+  cp "$SCRATCH/shellcheck.tar.gz" "$STUB_ARCHIVE"
+  file="$(in_home "$home" shellcheck_binary 2>/dev/null)"
+  [[ $file == "$home/var/bin/shellcheck-v9.9.9" && $("$file") == "version: 9.9.9" ]]
+}
+check "a download that matches its checksum is kept, and is the tool the archive held" kept_and_runs
+
+fetched_once() {
+  in_home "$SCRATCH/kept" shellcheck_binary >/dev/null 2>&1
+  [[ $(wc -l <"$ASKED") -eq 1 ]]
+}
+check "a tool already kept is not downloaded again" fetched_once
+
+mismatch_thrown_away() {
+  local home out
+  home="$(kapelos_home changed Linux_x86_64 "$(printf '0%.0s' {1..64})")"
+  out="$(in_home "$home" shellcheck_binary 2>&1)" && return 1
+  [[ $out == *"doesn't match the checksum in etc/shellcheck.tsv"* ]] || return 1
+  [[ $(wc -l <"$ASKED") -eq 1 && -z $(ls "$home/var/bin") ]]
+}
+check "a download that doesn't match is refused by name, and nothing of it is kept" mismatch_thrown_away
+
+failed_download_said() {
+  local home out
+  home="$(kapelos_home offline Linux_x86_64 "$(sum_of "$SCRATCH/shellcheck.tar.gz")")"
+  out="$(STUB_CURL_FAILS=1 in_home "$home" shellcheck_binary 2>&1)" && return 1
+  [[ $out == *"shellcheck v9.9.9 couldn't be downloaded"* && -z $(ls "$home/var/bin") ]]
+}
+check "a download that fails is said, and nothing is kept" failed_download_said
+
+no_row_refused() {
+  local home out
+  home="$(kapelos_home norow Darwin_arm64 "$(sum_of "$SCRATCH/shellcheck.tar.gz")")"
+  out="$(in_home "$home" shellcheck_binary 2>&1)" && return 1
+  [[ $out == *"etc/shellcheck.tsv has no checksum for Linux_x86_64"* && ! -s $ASKED ]]
+}
+check "a machine the pin has no row for is refused before anything is asked for" no_row_refused
+
+# What each tool's release calls the file for a machine, with uname standing in for the machine.
+asks_for() {
+  local tool="$1" os="$2" machine="$3" platform="$4" address="$5" home
+  home="$(kapelos_home "$tool-$os-$machine" "$platform" "$(sum_of "$SCRATCH/$tool.tar.gz")")"
+  cp "$SCRATCH/$tool.tar.gz" "$STUB_ARCHIVE"
+  STUB_OS="$os" STUB_MACHINE="$machine" in_home "$home" "${tool}_binary" >/dev/null 2>&1
+  [[ $(cat "$ASKED") == "$address" ]]
+}
+SHELLCHECK=https://github.com/koalaman/shellcheck/releases/download/v9.9.9/shellcheck-v9.9.9
+ACT=https://github.com/nektos/act/releases/download/v9.9.9/act
+check "shellcheck on Linux x86_64 is asked for by its release's name" asks_for shellcheck Linux x86_64 Linux_x86_64 "$SHELLCHECK.linux.x86_64.tar.gz"
+check "shellcheck on Linux aarch64" asks_for shellcheck Linux aarch64 Linux_arm64 "$SHELLCHECK.linux.aarch64.tar.gz"
+check "shellcheck on an Intel Mac" asks_for shellcheck Darwin x86_64 Darwin_x86_64 "$SHELLCHECK.darwin.x86_64.tar.gz"
+check "shellcheck on an Apple Silicon Mac" asks_for shellcheck Darwin arm64 Darwin_arm64 "$SHELLCHECK.darwin.aarch64.tar.gz"
+check "act on Linux x86_64 is asked for by its release's name" asks_for act Linux x86_64 Linux_x86_64 "${ACT}_Linux_x86_64.tar.gz"
+check "act on an Apple Silicon Mac" asks_for act Darwin arm64 Darwin_arm64 "${ACT}_Darwin_arm64.tar.gz"
+
+other_system_refused() {
+  local home out
+  home="$(kapelos_home bsd Linux_x86_64 "$(sum_of "$SCRATCH/shellcheck.tar.gz")")"
+  out="$(STUB_OS=FreeBSD in_home "$home" shellcheck_binary 2>&1)" && return 1
+  [[ $out == *"Linux and macOS only"* && ! -s $ASKED ]]
+}
+check "another system is refused before anything is asked for" other_system_refused
+
+# The pin Kapelos ships: one version, and a whole checksum for each of the four machines.
+shipped_pin_whole() {
+  local rows
+  rows="$(grep -vE '^[[:space:]]*(#|$)' "$ROOT/etc/shellcheck.tsv")"
+  [[ $(cut -f 1 <<<"$rows" | sort -u | wc -l) -eq 1 ]] || return 1
+  [[ $(cut -f 2 <<<"$rows" | sort | tr '\n' ' ') == "Darwin_arm64 Darwin_x86_64 Linux_arm64 Linux_x86_64 " ]] || return 1
+  refused grep -qvE $'^v[0-9]+\\.[0-9]+\\.[0-9]+\t[A-Za-z0-9_]+\t[0-9a-f]{64}$' <<<"$rows"
+}
+check "etc/shellcheck.tsv names one version, with a checksum for each of the four machines" shipped_pin_whole
+
+if [[ $FAILURES -gt 0 ]]; then
+  echo "pinned-tools: $FAILURES failed"
+  exit 1
+fi
+echo "pinned-tools: all passed"
