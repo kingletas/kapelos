@@ -1,0 +1,6 @@
+# n98-magerun2, which kapelos magerun runs in the PHP container for a store that does not carry its own. One PHAR
+# for every machine, so one row. The checksum is the one its release page gave for that file, checked before a
+# downloaded copy is ever run and again where the container reads it. The last column is the oldest PHP that
+# release runs on, from its own composer.json.
+# version	platform	sha256	php
+10.1.0	any	76c931312f3ab6a5a5e1dbd40544cf43f9ecab176bca6a3597ebf4a3413fe270	8.2

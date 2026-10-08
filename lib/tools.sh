@@ -133,28 +133,34 @@ host_platform() {
 
 # A pinned tool is downloaded once and run only if it matches the checksum Kapelos records in etc/NAME.tsv.
 # VERSION in the address, and in the archive member that is the tool, stands for the version that file names.
+# With no member named, the download is the tool itself and not an archive.
 pinned_binary() {
   local name="$1" platform="$2" url="$3" member="$4" version expected actual file tmp
   read -r version expected < <(grep -vE '^[[:space:]]*(#|$)' "etc/$name.tsv" | awk -v p="$platform" '$2 == p { print $1, $3 }')
   [[ -n ${expected:-} ]] || die "etc/$name.tsv has no checksum for $platform"
   file="var/bin/$name-$version"
   if [[ ! -x $file ]]; then
-    require_tools curl tar
+    require_tools curl
+    [[ -z $member ]] || require_tools tar
     mkdir -p var/bin
     tmp="$(mktemp -d)"
     step "Downloading $name $version for $platform" >&2
-    if ! curl -fsSL -o "$tmp/$name.tar.gz" "${url//VERSION/$version}"; then
+    if ! curl -fsSL -o "$tmp/$name.download" "${url//VERSION/$version}"; then
       rm -rf "$tmp"
       die "$name $version couldn't be downloaded, and it is fetched once before it can run"
     fi
-    actual="$(sha256_stdin <"$tmp/$name.tar.gz")"
+    actual="$(sha256_stdin <"$tmp/$name.download")"
     if [[ $actual != "$expected" ]]; then
       rm -rf "$tmp"
       die "the $name download doesn't match the checksum in etc/$name.tsv, so it was thrown away"
     fi
-    member="${member//VERSION/$version}"
-    tar -xzf "$tmp/$name.tar.gz" -C "$tmp" "$member"
-    mv "$tmp/$member" "$file"
+    if [[ -n $member ]]; then
+      member="${member//VERSION/$version}"
+      tar -xzf "$tmp/$name.download" -C "$tmp" "$member"
+      mv "$tmp/$member" "$file"
+    else
+      mv "$tmp/$name.download" "$file"
+    fi
     chmod +x "$file"
     rm -rf "$tmp"
   fi
@@ -579,4 +585,84 @@ cmd_test() {
     run_integration_tests "$@" || failed=1
   fi
   [[ $failed -eq 0 ]] || die "tests failed"
+}
+
+# --- n98-magerun2, run in the store's PHP container ------------------------------
+
+MAGERUN_IN_CONTAINER=/usr/local/bin/n98-magerun2.phar
+
+magerun_binary() {
+  pinned_binary magerun any "https://github.com/netz98/n98-magerun2/releases/download/VERSION/n98-magerun2.phar" ""
+}
+
+# The pin's one row: the version, its checksum, and the oldest PHP it runs on.
+magerun_pin() {
+  grep -vE '^[[:space:]]*(#|$)' etc/magerun.tsv | awk '$2 == "any" { print $1, $3, $4 }'
+}
+
+# One look into the PHP container: whether the store carries its own n98-magerun2, the PHP it runs, and the
+# checksum of the pinned copy there, which is empty when there is none.
+magerun_probe() {
+  # shellcheck disable=SC2016 # the script is the container's shell's to expand
+  compose exec -T php sh -c '
+    test -f vendor/bin/n98-magerun2 && echo own=yes || echo own=no
+    php -r "echo \"php=\", PHP_MAJOR_VERSION, \".\", PHP_MINOR_VERSION, \"\n\";"
+    echo "sum=$(sha256sum "$1" 2>/dev/null | cut -d" " -f1)"' sh "$MAGERUN_IN_CONTAINER" </dev/null
+}
+
+# Whether PHP version $1 is $2 or newer, both as MAJOR.MINOR.
+php_at_least() {
+  [[ $(printf '%s\n%s\n' "$1" "$2" | sort -t . -k 1,1n -k 2,2n | head -n 1) == "$2" ]]
+}
+
+# Puts the pinned PHAR where the PHP container reads it, unless the one there already matches the pin. docker cp
+# keeps the owner the file has on this machine, who is the store's user in the container, so the copy is then
+# made root's and read-only, in a folder only root writes: the user runs it and cannot change it.
+magerun_into_container() {
+  local php="$1" have="$2" version expected floor file
+  read -r version expected floor < <(magerun_pin)
+  [[ -n ${expected:-} ]] || die "etc/magerun.tsv has no row for n98-magerun2"
+  php_at_least "$php" "$floor" ||
+    die "n98-magerun2 $version needs PHP $floor or newer, and this store runs PHP $php. Put a release that fits in the store with composer require n98/magerun2-dist:VERSION, and kapelos magerun runs that one"
+  [[ $have != "$expected" ]] || return 0
+  # Said outright, and not left to the shell's exit-on-error: a download that was refused must never reach a run.
+  file="$(magerun_binary)" || return 1
+  compose cp "$file" "php:$MAGERUN_IN_CONTAINER" >/dev/null || die "n98-magerun2 couldn't be copied into the PHP container"
+  # shellcheck disable=SC2016 # the script is the container's shell's to expand
+  compose exec -T -u root php sh -c 'chown root:root "$1" && chmod 0555 "$1"' sh "$MAGERUN_IN_CONTAINER" </dev/null ||
+    die "the copy of n98-magerun2 in the PHP container couldn't be made read-only, so it wasn't run"
+  have="$(magerun_probe | sed -n 's/^sum=//p')" || have=""
+  [[ $have == "$expected" ]] ||
+    die "the copy of n98-magerun2 in the PHP container doesn't match the checksum in etc/magerun.tsv, so it wasn't run. Remove ${file#"$KAPELOS_HOME/"} and run this again to fetch it anew"
+}
+
+# The store's own copy wins, so a team that pins n98-magerun2 in composer.json runs the release it chose.
+cmd_magerun() {
+  local probe
+  load_env
+  require_running php
+  probe="$(magerun_probe)" || die "the PHP container didn't answer, so nothing was run"
+  if grep -qx 'own=yes' <<<"$probe"; then
+    exec_php php vendor/bin/n98-magerun2 "$@"
+    return
+  fi
+  case "${1:-}" in
+    self-update | selfupdate)
+      die "Kapelos's copy of n98-magerun2 is the one etc/magerun.tsv pins, and it isn't updated in place. A store that wants another release adds it with composer require n98/magerun2-dist, and kapelos magerun runs that one"
+      ;;
+  esac
+  magerun_into_container "$(sed -n 's/^php=//p' <<<"$probe")" "$(sed -n 's/^sum=//p' <<<"$probe")" || return 1
+  exec_php php "$MAGERUN_IN_CONTAINER" "$@"
+}
+
+# For doctor: which n98-magerun2 kapelos magerun would run on a running store.
+magerun_says() {
+  local probe version _rest
+  probe="$(magerun_probe 2>/dev/null)" || return 0
+  if grep -qx 'own=yes' <<<"$probe"; then
+    echo "kapelos magerun runs the store's own vendor/bin/n98-magerun2"
+  else
+    read -r version _rest < <(magerun_pin)
+    echo "kapelos magerun runs n98-magerun2 $version, the release etc/magerun.tsv pins"
+  fi
 }

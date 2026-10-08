@@ -111,6 +111,7 @@ Everything goes through one command, `bin/kapelos`. Run it on its own for the fu
 | `bin/kapelos deploy` | Rehearse a production deployment. `bin/kapelos develop` goes back |
 | `bin/kapelos scale web=2 replica=1` | Run the site on two web servers with a database replica. See [More web servers and a database replica](#more-web-servers-and-a-database-replica) |
 | `bin/kapelos composer install` | Run Composer |
+| `bin/kapelos magerun sys:check` | Run [n98-magerun2](#n98-magerun2): the store's own copy, or the release Kapelos pins |
 | `bin/kapelos db` | A MariaDB prompt on the store's database. `db dump` writes a gzipped dump |
 | `bin/kapelos snapshot save clean` | Save the database, search and queue; `snapshot restore clean` puts them back. See [Snapshots and dumps](#snapshots-and-dumps) |
 | `bin/kapelos snapshot save --series deploy` | Save one named by the time, and keep only the newest few of that series |
@@ -480,6 +481,26 @@ The last one works because Magento accepts any unambiguous abbreviation, so `c:f
 `bin/kapelos magento` is the long form. You need it only for a Magento command without a colon, such as `bin/kapelos magento list`. Kapelos's own commands never have a colon, so the two never clash.
 
 If the stack isn't running, you get `php isn't running. Start the stack with: kapelos up`, not a Docker error.
+
+### n98-magerun2
+
+[n98-magerun2](https://github.com/netz98/n98-magerun2) adds commands Magento doesn't have. Its commands have colons too, and some share a name with Magento's, so it has a word of its own:
+
+```bash
+bin/kapelos magerun sys:check
+bin/kapelos magerun config:search payment
+bin/kapelos magerun dev:console
+```
+
+It runs in the PHP container, at the Magento root, as your user, and its exit code is the command's.
+
+**The store's own copy wins.** A store that carries `vendor/bin/n98-magerun2`, which `composer require n98/magerun2-dist` puts there, runs that one, so a team that pins its release in `composer.json` gets its release.
+
+**Otherwise Kapelos runs the release it pins.** `etc/magerun.tsv` names one release and its SHA-256. Kapelos downloads it once into `var/bin`, copies it into the PHP container, and runs it only when the copy there matches that checksum; a download or a copy that doesn't match is refused and never run. Nothing is written into the store's folder, so an adopted store is served the same way. The copy belongs to root in the container and your user can't change it, and `magerun self-update` on it is refused: another release comes from the store's `composer.json` or from a new row in `etc/magerun.tsv`. The pinned release needs PHP 8.2 or newer, and a store on an older PHP is told so.
+
+**It can do whatever n98-magerun2 can.** That includes dropping the database, importing over it and making an admin user, with the store's own credentials. Kapelos asks no question first, as it asks none before a Magento command.
+
+`bin/kapelos doctor` says which copy a running store would use.
 
 ### Stores with SourceGuardian-encoded extensions
 

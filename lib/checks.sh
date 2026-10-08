@@ -287,7 +287,7 @@ yes_if() {
 cmd_doctor() {
   REPORT_FAILS=0
   REPORT_WARNS=0
-  local version major minor memory free floor root port running=no release row actual tool rc busy i n
+  local version major minor memory free floor root port running=no release row actual tool rc busy i n magerun
   echo "This machine"
   if ! command -v docker >/dev/null; then
     report_line FAIL "Docker isn't installed"
@@ -344,6 +344,8 @@ cmd_doctor() {
     running_projects | holds -qx "${COMPOSE_PROJECT_NAME:-kapelos}" && running=yes
     if [[ $running == yes ]]; then
       report_line pass "running"
+      magerun="$(magerun_says)"
+      [[ -z $magerun ]] || report_line note "$magerun"
       doctor_scale
     else
       local taken=0
