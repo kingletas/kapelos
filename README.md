@@ -306,7 +306,7 @@ kapelos snapshot delete NAME removes an old one
 
 **Ports.** Each site of a folder has its own block of ports. `kapelos env SITE` gives a new site the first block no other site here uses, and `--slot N` picks one; the table in [Two stores on one machine](#two-stores-on-one-machine) lists them. A site made before blocks, on the default ports, moves with `kapelos site ports SITE`, which prints the commands that change the address in its store's database. `up` refuses a site whose ports a running site publishes, and names both. `kapelos info` shows the site's block.
 
-**Stopping.** `kapelos down SITE` stops one site and `kapelos stop-others` stops every one but the active site, both keeping their data. `kapelos sites` shows each site, whether it runs, the memory it uses or last used, and its storefront port.
+**Stopping.** `kapelos down SITE` stops one site and `kapelos stop-others` stops every one but the active site, both keeping their data. When Docker keeps a stopped site's network, as it can until it restarts, the stop still counts: the command names the network, exits 0, and `stop-others` goes on to the next site. `kapelos up` starts the site again with that network there. A stop that leaves a container fails and says where to look. `kapelos sites` shows each site, whether it runs, the memory it uses or last used, and its storefront port.
 
 The work that fills every core, starting and installing stores, composer and `setup:upgrade`, takes turns; see [Heavy work takes turns](#heavy-work-takes-turns).
 

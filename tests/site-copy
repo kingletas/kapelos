@@ -446,7 +446,7 @@ check "and the settings" test -f "$A/etc/sites/shop-behind.env"
 
 # A container Docker would not remove may be running from the code, so nothing is taken from under it.
 running stuck shop-behind 0
-out="$(STUB_NETWORK_KEPT=kapelos-shop-behind_default kapelos site remove shop-behind -y 2>&1)" && status=0 || status=$?
+out="$(STUB_NETWORK_KEPT=kapelos-shop-behind_default STUB_CONTAINER_KEPT=yes kapelos site remove shop-behind -y 2>&1)" && status=0 || status=$?
 check "a removal that leaves a container stops there" test "$status" -ne 0
 check "with the code still in place" test -d "$A/var/stores/shop-behind"
 check "and the settings" test -f "$A/etc/sites/shop-behind.env"
