@@ -41,6 +41,10 @@ guard, _, rest = command.partition("&&")
 sys.exit(0 if "-f /var/lib/rabbitmq/.erlang.cookie" in guard and "rabbitmq-diagnostics" in rest else 1)
 PY
 
+  echo "php: a request's query string is not handed to the code as command-line arguments"
+  grep -qE '^register_argc_argv[[:space:]]*=[[:space:]]*Off[[:space:]]*$' etc/php/kapelos.ini ||
+    die "etc/php/kapelos.ini doesn't turn register_argc_argv off. PHP leaves it on unless an ini says otherwise, and then a web request's query string reaches the code as command-line arguments"
+
   echo "project: a store's allowed settings are read, and STORES becomes nginx's map"
   mkdir -p "$scratch/store/.kapelos/commands"
   write_env "$scratch/env-project" "MAGENTO_SRC=$scratch/store" "COMPOSE_PROJECT_NAME=kapelos-check-project" "PROXY_NETWORK=proxy"
