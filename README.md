@@ -494,7 +494,7 @@ bin/kapelos magerun dev:console
 
 It runs in the PHP container, at the Magento root, as your user, and its exit code is the command's.
 
-**The store's own copy wins.** A store that carries `vendor/bin/n98-magerun2`, which `composer require n98/magerun2-dist` puts there, runs that one, so a team that pins its release in `composer.json` gets its release.
+**The store's own copy wins.** A store that carries `vendor/bin/n98-magerun2`, which `composer require n98/magerun2-dist` puts there, runs that one, so a team that pins its release in `composer.json` gets its release. A Mage-OS store already carries one, since Mage-OS requires that package itself (seen on 3.5.0), so there `kapelos magerun` runs the release Mage-OS chose and `kapelos magerun --version` says which.
 
 **Otherwise Kapelos runs the release it pins.** `etc/magerun.tsv` names one release and its SHA-256. Kapelos downloads it once into `var/bin`, copies it into the PHP container, and runs it only when the copy there matches that checksum; a download or a copy that doesn't match is refused and never run. Nothing is written into the store's folder, so an adopted store is served the same way. The copy belongs to root in the container and your user can't change it, and `magerun self-update` on it is refused: another release comes from the store's `composer.json` or from a new row in `etc/magerun.tsv`. The pinned release needs PHP 8.2 or newer, and a store on an older PHP is told so.
 
