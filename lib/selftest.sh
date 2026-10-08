@@ -169,6 +169,12 @@ PY
     die "tests/pinned-tools failed"
   }
 
+  echo "magerun: the store's own n98-magerun2 first, else the pinned one, run only when its checksum matches, against stand-ins"
+  tests_out="$(tests/magerun 2>&1)" || {
+    grep -v '^ok ' <<<"$tests_out" >&2
+    die "tests/magerun failed"
+  }
+
   # The container is given the command, its library, the shipped commands and the example settings, and no
   # network: the folder also holds var and etc/sites, which are the stores made here and their settings, and
   # the step has no use for them.
@@ -198,7 +204,7 @@ PY
   echo "shellcheck $("$shellcheck" --version | awk '$1 == "version:" { print $2 }'), the version etc/shellcheck.tsv names"
   # -a is what reaches lib/: -x alone follows a source for the names in it and reports nothing found inside.
   "$shellcheck" -a -x bin/kapelos
-  "$shellcheck" packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker tests/heavy-queue tests/many-sites tests/site-copy tests/seed tests/pinned-tools
+  "$shellcheck" packaging/*.sh scripts/check-install scripts/install scripts/uninstall tests/ports-and-guard tests/shipped-commands tests/php-module-check tests/stub-docker tests/heavy-queue tests/many-sites tests/site-copy tests/seed tests/pinned-tools tests/magerun
   for command in share/commands/*; do
     # The lib folder beside them holds PHP and SQL, which check-image parses instead.
     if [[ -f $command ]]; then

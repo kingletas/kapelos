@@ -120,6 +120,7 @@ Working in the store
   connect                Point an existing store's settings at Kapelos, after import
   <group>:<command>      Any Magento command runs directly: kapelos cache:flush, kapelos setup:upgrade
   magento ARGS...        The long form, for a Magento command without a colon
+  magerun ARGS...        Run n98-magerun2: the store's own copy, or the release Kapelos pins
   debug <command>        Run a Magento command with Xdebug, connecting to your IDE
   shell                  A shell in the PHP container, at the Magento root
   composer ARGS...       Run Composer
@@ -218,6 +219,7 @@ main() {
     interactive) cmd_interactive ;;
     logs) compose logs -f "$@" ;;
     magento) run_magento_command "$@" ;;
+    magerun) cmd_magerun "$@" ;;
     magento-install) cmd_magento_install ;;
     manipulus) cmd_manipulus "$@" ;;
     modules) cmd_modules "$@" ;;

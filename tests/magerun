@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# kapelos magerun: the store's own n98-magerun2 wins, and a store without one runs the release Kapelos pins,
+# fetched once, put where the PHP container reads it, and run only when its checksum there matches the pin.
+# Offline: curl is a stand-in, the PHAR is made here, and the container is a function that answers from variables.
+set -euo pipefail
+
+ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+FAILURES=0
+
+result() {
+  if [[ $1 -eq 0 ]]; then
+    printf 'ok    %s\n' "$2"
+  else
+    printf 'FAIL  %s\n' "$2"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Runs the rest of the line as a test named by the first word, without letting a failure end the script.
+check() {
+  local name="$1" status=0
+  shift
+  "$@" || status=$?
+  result "$status" "$name"
+}
+
+sum_of() {
+  { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1"; } | cut -d ' ' -f 1
+}
+
+# The stand-in curl writes the file this test made to the place it was asked for, and records the address.
+mkdir -p "$SCRATCH/bin"
+cat >"$SCRATCH/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+while [[ $# -gt 1 ]]; do
+  [[ $1 == -o ]] && out="$2"
+  shift
+done
+echo "$1" >>"$ASKED"
+[[ -z ${STUB_CURL_FAILS:-} ]] || exit 22
+cp "$STUB_DOWNLOAD" "$out"
+STUB
+chmod +x "$SCRATCH/bin/curl"
+export ASKED="$SCRATCH/asked" STUB_DOWNLOAD="$SCRATCH/n98.phar"
+printf 'a stand-in for the PHAR\n' >"$SCRATCH/n98.phar"
+printf 'a PHAR someone changed\n' >"$SCRATCH/other.phar"
+PIN="$(sum_of "$SCRATCH/n98.phar")"
+
+# A Kapelos folder with a pin written here, and a container that starts with no copy of the PHAR.
+home() {
+  HOME_DIR="$SCRATCH/$1"
+  mkdir -p "$HOME_DIR/etc"
+  printf '# version\tplatform\tsha256\tphp\n9.9.9\tany\t%s\t8.2\n' "${2:-$PIN}" >"$HOME_DIR/etc/magerun.tsv"
+  : >"$ASKED"
+  : >"$SCRATCH/calls"
+  rm -f "$SCRATCH/in-container"
+}
+
+# Runs kapelos magerun in that folder with the container stood in for. UP, OWN and PHP say what the container
+# is; a copy put there is kept in a file, so its checksum is the real one of what was copied.
+magerun() {
+  (
+    cd "$HOME_DIR"
+    export KAPELOS_HOME="$HOME_DIR" PATH="$SCRATCH/bin:$PATH"
+    # shellcheck source=/dev/null # both are checked through bin/kapelos
+    . "$ROOT/lib/core.sh" && . "$ROOT/lib/tools.sh"
+    # shellcheck disable=SC2329 # both stand in for functions cmd_magerun calls
+    load_env() { :; }
+    # shellcheck disable=SC2329
+    compose() {
+      echo "$*" >>"$SCRATCH/calls"
+      case "$1 ${2:-}" in
+        "ps --status") [[ ${UP:-yes} == yes ]] && echo php ;;
+        "exec -T")
+          if [[ ${3:-} == -u ]]; then
+            return 0
+          elif [[ ${3:-} == php && ${4:-} == sh ]]; then
+            echo "own=${OWN:-no}"
+            echo "php=${PHP:-8.4}"
+            echo "sum=$([[ -f $SCRATCH/in-container ]] && sum_of "$SCRATCH/in-container")"
+          else
+            return "${EXIT:-0}"
+          fi
+          ;;
+        "cp "*) cp "${STUB_COPIES:-$2}" "$SCRATCH/in-container" ;;
+        "exec php") return "${EXIT:-0}" ;;
+      esac
+    }
+    cmd_magerun "$@"
+  )
+}
+ran() { grep -c -- "^exec\( -T\)\? php php $1" "$SCRATCH/calls" || true; }
+
+home own
+out="$(OWN=yes magerun sys:check --format=json 2>&1)" && status=0 || status=$?
+check "a store that carries its own n98-magerun2 runs that one" test "$(ran 'vendor/bin/n98-magerun2 sys:check --format=json')" = 1
+check "and nothing is downloaded or copied for it" test ! -s "$ASKED" -a "$(grep -c '^cp ' "$SCRATCH/calls")" = 0
+check "and it ends as the command ended" test "$status" -eq 0
+out="$(OWN=yes EXIT=3 magerun sys:check 2>&1)" && status=0 || status=$?
+check "its exit code comes back" test "$status" -eq 3
+out="$(OWN=yes magerun self-update 2>&1)" && status=0 || status=$?
+check "the store's own copy may update itself" test "$(ran 'vendor/bin/n98-magerun2 self-update')" = 1
+
+home pinned
+out="$(magerun sys:check 2>&1)" && status=0 || status=$?
+check "a store without one runs the pinned release from where the container reads it" test "$(ran '/usr/local/bin/n98-magerun2.phar sys:check')" = 1
+check "fetched from the release the pin names" grep -qx "https://github.com/netz98/n98-magerun2/releases/download/9.9.9/n98-magerun2.phar" "$ASKED"
+check "and copied into the PHP container" grep -q "^cp $HOME_DIR/var/bin/magerun-9.9.9 php:/usr/local/bin/n98-magerun2.phar$" "$SCRATCH/calls"
+check "where it is made root's and read-only before it runs" test "$(grep -n '^exec -T -u root php sh -c chown root:root' "$SCRATCH/calls" | cut -d: -f1)" -lt "$(grep -n '^exec\( -T\)\? php php /usr/local/bin' "$SCRATCH/calls" | cut -d: -f1)"
+: >"$SCRATCH/calls"
+out="$(EXIT=4 magerun db:info 2>&1)" && status=0 || status=$?
+check "a second run downloads nothing and copies nothing" test "$(wc -l <"$ASKED")" -eq 1 -a "$(grep -c '^cp ' "$SCRATCH/calls")" = 0
+check "and its exit code comes back too" test "$status" -eq 4
+
+home changed "$(printf '0%.0s' {1..64})"
+out="$(magerun sys:check 2>&1)" && status=0 || status=$?
+check "a download that doesn't match the pin is refused" test "$status" -ne 0
+check "by name" grep -q "the magerun download doesn't match the checksum in etc/magerun.tsv" <<<"$out"
+check "and nothing is copied or run" test "$(grep -c '^cp \|^exec php' "$SCRATCH/calls")" = 0
+
+home swapped
+out="$(STUB_COPIES="$SCRATCH/other.phar" magerun sys:check 2>&1)" && status=0 || status=$?
+check "a copy in the container that doesn't match the pin is not run" test "$status" -ne 0 -a "$(ran '/usr/local/bin/n98-magerun2.phar')" = 0
+check "and it says so" grep -q "doesn't match the checksum in etc/magerun.tsv, so it wasn't run" <<<"$out"
+
+home stale
+cp "$SCRATCH/other.phar" "$SCRATCH/in-container"
+out="$(magerun sys:check 2>&1)" && status=0 || status=$?
+check "a copy left by another pin is replaced before it runs" test "$status" -eq 0 -a "$(sum_of "$SCRATCH/in-container")" = "$PIN"
+
+home update
+out="$(magerun self-update 2>&1)" && status=0 || status=$?
+check "the pinned copy is not updated in place" test "$status" -ne 0 -a "$(ran '/usr/local/bin/n98-magerun2.phar')" = 0
+check "and it says how a store gets another release" grep -q "composer require n98/magerun2-dist" <<<"$out"
+
+home oldphp
+out="$(PHP=8.1 magerun sys:check 2>&1)" && status=0 || status=$?
+check "a store on a PHP older than the pinned release runs on is told so" grep -q "n98-magerun2 9.9.9 needs PHP 8.2 or newer, and this store runs PHP 8.1" <<<"$out"
+check "before anything is downloaded" test "$status" -ne 0 -a ! -s "$ASKED"
+out="$(PHP=8.10 magerun sys:check 2>&1)" && status=0 || status=$?
+check "a PHP of 8.10 is newer than 8.2, not older" test "$status" -eq 0
+
+home down
+out="$(UP=no magerun sys:check 2>&1)" && status=0 || status=$?
+check "with the stack down it says so" grep -q "php isn't running. Start the stack with: kapelos up" <<<"$out"
+check "and asks the container nothing" test "$status" -ne 0 -a "$(grep -c '^exec' "$SCRATCH/calls")" = 0
+
+echo
+if [[ $FAILURES -eq 0 ]]; then
+  echo "magerun: all passed"
+else
+  echo "magerun: $FAILURES failed"
+  exit 1
+fi
