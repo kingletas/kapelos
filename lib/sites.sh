@@ -206,16 +206,34 @@ site_of_project() {
 
 # Every profile is on, so a service whose profile was switched off after it started is stopped too.
 stop_project() {
-  local project="$1" file
+  local project="$1" file status=0
   file="$(site_of_project "$project")"
   step "Stopping $project, keeping its data"
   if [[ -n $file ]]; then
-    COMPOSE_PROFILES='*' docker compose --progress quiet --env-file "$file" down --remove-orphans
+    COMPOSE_PROFILES='*' docker compose --progress quiet --env-file "$file" down --remove-orphans || status=$?
   elif [[ -f .env && ! -L .env && $(env_value .env COMPOSE_PROJECT_NAME) == "$project" ]]; then
-    COMPOSE_PROFILES='*' docker compose --progress quiet --env-file .env down --remove-orphans
+    COMPOSE_PROFILES='*' docker compose --progress quiet --env-file .env down --remove-orphans || status=$?
   else
-    COMPOSE_PROFILES='*' docker compose --progress quiet -p "$project" down --remove-orphans
+    COMPOSE_PROFILES='*' docker compose --progress quiet -p "$project" down --remove-orphans || status=$?
   fi
+  [[ $status -eq 0 ]] || stopped_but_for_a_network "$project"
+}
+
+# Decides what a docker compose down that failed left of a site. Docker can refuse to let go of a network nothing
+# is attached to, and only a restart of Docker clears that: with every container gone, the site is stopped.
+stopped_but_for_a_network() {
+  local project="$1" remaining kept left
+  remaining="$(docker ps -a -q --filter "label=com.docker.compose.project=$project")" ||
+    die "Docker can't say whether $project's containers are gone, so it isn't called stopped"
+  [[ -z $remaining ]] ||
+    die "Docker didn't stop all of $project. docker ps -a --filter label=com.docker.compose.project=$project lists what is left"
+  kept="$(docker network ls --filter "label=com.docker.compose.project=$project" --format 'network {{.Name}}')" || kept=""
+  [[ -n $kept ]] || die "docker compose down failed for $project, for the reason Docker gave above"
+  echo "$project is stopped and its data is kept. Docker kept:"
+  while IFS= read -r left; do
+    echo "  $left"
+  done <<<"$kept"
+  echo "A network with nothing attached goes when Docker restarts. kapelos up starts the site again with it there."
 }
 
 # A plain .env becomes a named site the first time sites are used, so nothing in it is lost.
@@ -296,8 +314,9 @@ cmd_down() {
   local name="${1:-}" file project
   if [[ -z $name ]]; then
     load_env
-    record_footprint "${COMPOSE_PROJECT_NAME:-kapelos}"
-    compose down
+    project="${COMPOSE_PROJECT_NAME:-kapelos}"
+    record_footprint "$project"
+    compose down || stopped_but_for_a_network "$project"
     return
   fi
   valid_site_name "$name"

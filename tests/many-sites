@@ -329,6 +329,54 @@ reset_docker
 running w1 web $GIB
 check "stop-others with nothing else running says so" grep -q "Nothing else is running." <<<"$(kapelos stop-others)"
 
+# Docker can keep a network nothing is attached to until it restarts. The site is stopped all the same.
+kept() {
+  echo "$1_default|$1" >"$STUB_DOCKER/networks"
+}
+reset_docker
+running o1 other $((3 * GIB))
+kept kapelos-other
+out="$(STUB_NETWORK_KEPT=kapelos-other_default kapelos down other 2>&1)" && status=0 || status=$?
+check "down SITE ends well when Docker keeps the site's network and no container" test "$status" -eq 0
+check "it says the site is stopped" grep -q "^kapelos-other is stopped and its data is kept. Docker kept:$" <<<"$out"
+check "it names the network" grep -q "^  network kapelos-other_default$" <<<"$out"
+check "and says when that goes" grep -q "goes when Docker restarts" <<<"$out"
+
+running o1 other $((3 * GIB))
+out="$(STUB_NETWORK_KEPT=kapelos-other_default STUB_CONTAINER_KEPT=yes kapelos down other 2>&1)" && status=0 || status=$?
+check "with a container of the site left, down SITE fails" test "$status" -ne 0
+check "and says what is left" grep -q "Docker didn't stop all of kapelos-other" <<<"$out"
+check "and doesn't call the site stopped" bash -c "! grep -q 'is stopped' <<<\"\$1\"" _ "$out"
+
+reset_docker
+out="$(STUB_NETWORK_KEPT=kapelos-other_default kapelos down other 2>&1)" && status=0 || status=$?
+check "a down that fails with no network kept is still a failure" test "$status" -ne 0
+check "and is not called a stop" bash -c "! grep -q 'is stopped' <<<\"\$1\"" _ "$out"
+
+reset_docker
+running w1 web $((2 * GIB))
+kept kapelos-web
+out="$(STUB_NETWORK_KEPT=kapelos-web_default kapelos down 2>&1)" && status=0 || status=$?
+check "down for the active site ends well past a kept network too" test "$status" -eq 0
+check "and names it" grep -q "^  network kapelos-web_default$" <<<"$out"
+running w1 web $((2 * GIB))
+out="$(STUB_NETWORK_KEPT=kapelos-web_default STUB_CONTAINER_KEPT=yes kapelos down 2>&1)" && status=0 || status=$?
+check "and fails with a container left" test "$status" -ne 0
+
+# Whichever of the two stop-others reaches first, the one after a kept network is still stopped.
+for first in other apart; do
+  reset_docker
+  running w1 web $((2 * GIB))
+  running o1 other $((3 * GIB))
+  running a1 apart $((2 * GIB))
+  kept "kapelos-$first"
+  out="$(STUB_NETWORK_KEPT="kapelos-${first}_default" kapelos stop-others 2>&1)" && status=0 || status=$?
+  check "stop-others ends well when Docker keeps $first's network" test "$status" -eq 0
+  check "it stops other" grep -q "etc/sites/other.env down" "$STUB_DOCKER/calls"
+  check "and apart" grep -q "etc/sites/apart.env down" "$STUB_DOCKER/calls"
+  check "and names the network kept" grep -q "^  network kapelos-${first}_default$" <<<"$out"
+done
+
 echo
 if [[ $FAILURES -eq 0 ]]; then
   echo "all passed"
