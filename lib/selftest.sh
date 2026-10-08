@@ -169,11 +169,13 @@ PY
     die "tests/pinned-tools failed"
   }
 
-  # The container is given the command, its library and the example settings, and no network: the folder also
-  # holds var and etc/sites, which are the stores made here and their settings, and the step has no use for them.
+  # The container is given the command, its library, the shipped commands and the example settings, and no
+  # network: the folder also holds var and etc/sites, which are the stores made here and their settings, and
+  # the step has no use for them.
   echo "kapelos: runs under bash 3.2, the version macOS ships"
   docker run --rm --network none \
     -v "$KAPELOS_HOME/bin:/kapelos/bin:ro" -v "$KAPELOS_HOME/lib:/kapelos/lib:ro" \
+    -v "$KAPELOS_HOME/share/commands:/kapelos/share/commands:ro" \
     -v "$KAPELOS_HOME/.env.example:/kapelos/.env.example:ro" -w /kapelos bash:3.2 bash -c '
     set -e
     if [ -e /kapelos/var ] || [ -e /kapelos/etc ]; then
@@ -183,7 +185,8 @@ PY
     for lib in lib/*.sh; do bash -n "$lib"; done
     bash -n bin/kapelos
     bash bin/kapelos help >/dev/null
-    bash bin/kapelos commands >/dev/null
+    # A shipped command is looked for by name, so the listing cannot pass by listing none.
+    bash bin/kapelos commands | grep -q big-tables
     KAPELOS_ENV=/tmp/no-such-file bash bin/kapelos info >/dev/null 2>&1 && exit 1
     bash bin/kapelos no-such-command >/dev/null 2>&1 && exit 1
     cp -r /kapelos /tmp/k && cd /tmp/k && rm -f .env && bash bin/kapelos env >/dev/null && grep -q "^DB_PASSWORD=.\{32\}$" .env
