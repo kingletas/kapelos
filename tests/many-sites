@@ -353,6 +353,14 @@ out="$(STUB_NETWORK_KEPT=kapelos-other_default kapelos down other 2>&1)" && stat
 check "a down that fails with no network kept is still a failure" test "$status" -ne 0
 check "and is not called a stop" bash -c "! grep -q 'is stopped' <<<\"\$1\"" _ "$out"
 
+# A docker that cannot say whether a container is left is not read as none being left.
+reset_docker
+running o1 other $((3 * GIB))
+kept kapelos-other
+out="$(STUB_NETWORK_KEPT=kapelos-other_default STUB_PS_FAILS=yes kapelos down other 2>&1)" && status=0 || status=$?
+check "a stop that can't ask Docker about containers fails" test "$status" -ne 0
+check "and says that is why" grep -q "Docker can't say whether kapelos-other's containers are gone" <<<"$out"
+
 reset_docker
 running w1 web $((2 * GIB))
 kept kapelos-web
