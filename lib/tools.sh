@@ -622,6 +622,7 @@ magerun_into_container() {
   local php="$1" have="$2" version expected floor file
   read -r version expected floor < <(magerun_pin)
   [[ -n ${expected:-} ]] || die "etc/magerun.tsv has no row for n98-magerun2"
+  [[ -n $php ]] || die "the PHP container didn't say which PHP it runs, so n98-magerun2 wasn't run"
   php_at_least "$php" "$floor" ||
     die "n98-magerun2 $version needs PHP $floor or newer, and this store runs PHP $php. Put a release that fits in the store with composer require n98/magerun2-dist:VERSION, and kapelos magerun runs that one"
   [[ $have != "$expected" ]] || return 0

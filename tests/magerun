@@ -58,9 +58,10 @@ home() {
   rm -f "$SCRATCH/in-container"
 }
 
-# Runs kapelos magerun in that folder with the container stood in for. UP, OWN and PHP say what the container
-# is; a copy put there is kept in a file, so its checksum is the real one of what was copied.
-magerun() {
+# Runs one of Kapelos's functions in that folder with the container stood in for. UP, OWN and PHP say what the
+# container is, and PROBE_FAILS a container that doesn't answer; a copy put there is kept in a file, so its
+# checksum is the real one of what was copied.
+in_home() {
   (
     cd "$HOME_DIR"
     export KAPELOS_HOME="$HOME_DIR" PATH="$SCRATCH/bin:$PATH"
@@ -77,8 +78,9 @@ magerun() {
           if [[ ${3:-} == -u ]]; then
             return 0
           elif [[ ${3:-} == php && ${4:-} == sh ]]; then
+            [[ -z ${PROBE_FAILS:-} ]] || return 1
             echo "own=${OWN:-no}"
-            echo "php=${PHP:-8.4}"
+            echo "php=${PHP-8.4}"
             echo "sum=$([[ -f $SCRATCH/in-container ]] && sum_of "$SCRATCH/in-container")"
           else
             return "${EXIT:-0}"
@@ -88,9 +90,11 @@ magerun() {
         "exec php") return "${EXIT:-0}" ;;
       esac
     }
-    cmd_magerun "$@"
+    "$@"
   )
 }
+magerun() { in_home cmd_magerun "$@"; }
+says() { in_home magerun_says; }
 ran() { grep -c -- "^exec\( -T\)\? php php $1" "$SCRATCH/calls" || true; }
 
 home own
@@ -141,6 +145,19 @@ check "a store on a PHP older than the pinned release runs on is told so" grep -
 check "before anything is downloaded" test "$status" -ne 0 -a ! -s "$ASKED"
 out="$(PHP=8.10 magerun sys:check 2>&1)" && status=0 || status=$?
 check "a PHP of 8.10 is newer than 8.2, not older" test "$status" -eq 0
+
+home nophp
+out="$(PHP='' magerun sys:check 2>&1)" && status=0 || status=$?
+check "a container that doesn't say which PHP it runs is told so, and nothing is run" test "$status" -ne 0 -a "$(ran '/usr/local/bin/n98-magerun2.phar')" = 0
+check "in words that name what is missing" grep -q "the PHP container didn't say which PHP it runs, so n98-magerun2 wasn't run" <<<"$out"
+
+# The line kapelos doctor prints for a running store comes from here.
+home says
+check "doctor's line names the store's own copy where there is one" test "$(OWN=yes says)" = "kapelos magerun runs the store's own vendor/bin/n98-magerun2"
+check "and the pinned release, by its version, where there is none" test "$(says)" = "kapelos magerun runs n98-magerun2 9.9.9, the release etc/magerun.tsv pins"
+out="$(PROBE_FAILS=yes says 2>&1)" && status=0 || status=$?
+check "and says nothing, without failing, when the container doesn't answer" test "$status" -eq 0 -a -z "$out"
+check "it downloads nothing and copies nothing to say so" test ! -s "$ASKED" -a "$(grep -c '^cp ' "$SCRATCH/calls")" = 0
 
 home down
 out="$(UP=no magerun sys:check 2>&1)" && status=0 || status=$?
