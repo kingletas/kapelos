@@ -169,9 +169,17 @@ PY
     die "tests/pinned-tools failed"
   }
 
+  # The container is given the command, its library and the example settings, and no network: the folder also
+  # holds var and etc/sites, which are the stores made here and their settings, and the step has no use for them.
   echo "kapelos: runs under bash 3.2, the version macOS ships"
-  docker run --rm -v "$KAPELOS_HOME:/kapelos:ro" -w /kapelos bash:3.2 bash -c '
+  docker run --rm --network none \
+    -v "$KAPELOS_HOME/bin:/kapelos/bin:ro" -v "$KAPELOS_HOME/lib:/kapelos/lib:ro" \
+    -v "$KAPELOS_HOME/.env.example:/kapelos/.env.example:ro" -w /kapelos bash:3.2 bash -c '
     set -e
+    if [ -e /kapelos/var ] || [ -e /kapelos/etc ]; then
+      echo "the container can read more of the Kapelos folder than the command and its library" >&2
+      exit 1
+    fi
     for lib in lib/*.sh; do bash -n "$lib"; done
     bash -n bin/kapelos
     bash bin/kapelos help >/dev/null
