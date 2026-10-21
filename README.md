@@ -745,7 +745,7 @@ bin/kapelos scale web=1 replica=0    # back to the ordinary site; asks first, -y
 
 **It costs memory.** Each extra server is a PHP container allowed 4 GB and an nginx allowed 256 MB, and the replica is allowed 1 GB. They use far less while idle, but on a laptop two servers and a replica is plenty. The copies take disk as well: one store's worth each.
 
-**On an adopted store**, each copy gets Kapelos's `env.php`, the one server 1 runs with.
+**On an adopted store**, each copy gets Kapelos's `env.php`, the one server 1 runs with. So a per-server setting inside it (a node id, say) reads the same on every server; key on the fixed container host name instead.
 
 **A store that already built this by hand** in its own `.kapelos/compose.yaml` is refused while that file defines a service called `db-replica`, `php-2`, `web-2` and so on, because the two would merge. Take those services out of it, `kapelos trust` it again, and then scale.
 
