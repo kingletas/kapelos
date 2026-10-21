@@ -107,7 +107,7 @@ The stack
   logs [SERVICE...]      Follow the logs
   info                   Every address, port and login: store, admin, mail, database, Valkey, OpenSearch, RabbitMQ
   doctor                 Check this machine and this site: tools, memory, disk, ports, names, versions
-  build                  Build the PHP image
+  build                  Build the PHP image on the newest PHP base for its version
   cert                   Issue a trusted certificate for APP_HOST with mkcert, and serve it
   scale [web=N] [replica=N] [-y]
                          Run the site on 1 to 4 web servers, each with its own copy of the code, and
@@ -194,7 +194,7 @@ main() {
   case "$command" in
     adopt) cmd_adopt "$@" ;;
     bluetir) cmd_bluetir "$@" ;;
-    build) compose build php ;;
+    build) compose build --pull php ;;
     cache-reset) cmd_cache_reset ;;
     cert) cmd_cert ;;
     check) cmd_check ;;
