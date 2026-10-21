@@ -45,6 +45,10 @@ PY
   grep -qE '^register_argc_argv[[:space:]]*=[[:space:]]*Off[[:space:]]*$' etc/php/kapelos.ini ||
     die "etc/php/kapelos.ini doesn't turn register_argc_argv off. PHP leaves it on unless an ini says otherwise, and then a web request's query string reaches the code as command-line arguments"
 
+  echo "php: session upload progress is off"
+  grep -qE '^session\.upload_progress\.enabled[[:space:]]*=[[:space:]]*Off[[:space:]]*$' etc/php/kapelos.ini ||
+    die "etc/php/kapelos.ini doesn't turn session.upload_progress.enabled off. PHP leaves it on, Magento never reads it, and it is the early session path GHSA-6wmf-4rv5-p3rp used under FPM"
+
   echo "project: a store's allowed settings are read, and STORES becomes nginx's map"
   mkdir -p "$scratch/store/.kapelos/commands"
   write_env "$scratch/env-project" "MAGENTO_SRC=$scratch/store" "COMPOSE_PROJECT_NAME=kapelos-check-project" "PROXY_NETWORK=proxy"
