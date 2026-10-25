@@ -113,7 +113,7 @@ deploy_target_init() {
 
   step "Copying the store into $release"
   mkdir -p "$root/releases" "$root/shared" "$root/archives"
-  cp -a --reflink=auto "$tree/." "$release"
+  cp -a "$tree/." "$release"
   # Media and env.php are the release's links into shared/, as a deployment makes them.
   mv "$release/pub/media" "$root/shared/media"
   ln -s "$root/shared/media" "$release/pub/media"

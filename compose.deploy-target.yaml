@@ -205,5 +205,7 @@ services:
       - composer:/home/app/.composer
     ports:
       - "127.0.0.1:${DEPLOY_SSH_PORT:-2222}:2222"
+    # A build compiles every class in the store, so it is capped here and not only by a machine's own file.
+    cpus: 2.0
     mem_limit: 4g
     restart: unless-stopped

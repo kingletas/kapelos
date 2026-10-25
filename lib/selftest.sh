@@ -531,7 +531,8 @@ deploy_target_serves() {
   cp -a "$root/releases/$(basename "$(readlink "$root/magento_current")")/." "$root/releases/second"
   echo second >"$root/releases/second/pub/kapelos-release.txt"
   ln -s releases/second "$root/magento_current.next"
-  mv -T "$root/magento_current.next" "$root/magento_current"
+  # One rename, as a deployment makes it; mv -T would say the same on Linux only.
+  python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$root/magento_current.next" "$root/magento_current"
   keys="$KAPELOS_DEPLOY_STATE/keys"
   ssh_options="-o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$keys/known_hosts -i $keys/id_deploy"
   jump="ssh $ssh_options -p $DEPLOY_SSH_PORT -W %h:%p app@127.0.0.1"
@@ -772,6 +773,7 @@ published = {name: s.get("ports", []) for name, s in target.items() if s.get("po
 assert list(published) == ["builder"], f"the deploy target publishes {sorted(published)}"
 assert all(p["host_ip"] == "127.0.0.1" for p in published["builder"]), "the builder's sshd is published beyond 127.0.0.1"
 assert not target["php"].get("ports"), "the web node publishes a port"
+assert target["builder"].get("cpus") and target["builder"].get("mem_limit"), "the builder runs with no CPU or memory cap"
 assert "/srv/store.git" in targets(target, "builder"), "the builder has no origin to build from"
 PY_CHECK
 
