@@ -13,6 +13,8 @@ cleanup() {
 trap cleanup EXIT
 FAILURES=0
 export KAPELOS_QUEUE_DIR="$SCRATCH/queue"
+# A turn the command running this test holds, as self-test does, is not one of the scratch queue's.
+unset KAPELOS_HEAVY_TURN
 TURN="$KAPELOS_QUEUE_DIR/turn-1"
 
 result() {
