@@ -49,6 +49,17 @@ PY
   grep -qE '^session\.upload_progress\.enabled[[:space:]]*=[[:space:]]*Off[[:space:]]*$' etc/php/kapelos.ini ||
     die "etc/php/kapelos.ini doesn't turn session.upload_progress.enabled off. PHP leaves it on, Magento never reads it, and it is the early session path GHSA-6wmf-4rv5-p3rp used under FPM"
 
+  echo "status: PHP-FPM's status answers only on its socket, and nginx's only on a port nothing routes to"
+  if ! grep -qE '^pm\.status_path[[:space:]]*=' etc/php/fpm-pool.conf || ! grep -qE '^listen[[:space:]]*=[[:space:]]*/' etc/php/fpm-pool.conf; then
+    die "etc/php/fpm-pool.conf has no pm.status_path, or its pool listens on something other than a socket. The status page is for an exporter that shares the socket, never for an address on a network"
+  fi
+  grep -q 'listen 8081;' etc/nginx/default.conf.template ||
+    die "etc/nginx/default.conf.template has no server on 8081 for nginx's status"
+  if grep -q '8081' etc/traefik/dynamic/kapelos.yml etc/varnish/default.vcl compose.proxy.yaml ||
+    python3 -c 'import json,sys; ports=json.load(open(sys.argv[1]))["services"]["web"].get("ports", []); sys.exit(0 if any("8081" in str(p) for p in ports) else 1)' "$scratch/config.json"; then
+    die "port 8081 is routed or published. nginx's status is for an exporter on the stack's own network, never for an address of the store"
+  fi
+
   echo "project: a store's allowed settings are read, and STORES becomes nginx's map"
   mkdir -p "$scratch/store/.kapelos/commands"
   write_env "$scratch/env-project" "MAGENTO_SRC=$scratch/store" "COMPOSE_PROJECT_NAME=kapelos-check-project" "PROXY_NETWORK=proxy"
@@ -384,6 +395,11 @@ has_header() {
   curl -s -o /dev/null -D - "$@" | holds -qi "^$header"
 }
 
+# Asked from the PHP container, which is on the stack's network and is not the nginx serving the status.
+nginx_status_inside() {
+  exec_quiet php curl -s http://web:8081/nginx-status </dev/null | holds -q '^Active connections:'
+}
+
 mail_arrives() {
   exec_quiet php php -r 'exit(mail("someone@example.test", "kapelos self-test", "hello") ? 0 : 1);' &&
     sleep 1 &&
@@ -474,6 +490,9 @@ cmd_self_test() {
   echo "Self-test"
   verify "the storefront answers" status_is 200 "$STORE_URL"
   verify "the admin answers" status_is 200 "${STORE_URL}admin/"
+  verify "PHP-FPM's status is not a page of the store" status_is 404 "${STORE_URL}fpm-status"
+  verify "nginx's status is not a page of the store" status_is 404 "${STORE_URL}nginx-status"
+  verify "nginx's status answers on the stack's own network" nginx_status_inside
   verify "HTTPS answers, with Traefik's own certificate" https_answers
   verify "an ordinary request goes to the PHP with Xdebug off" xdebug_off_in_php
   verify "an Xdebug cookie goes to the debugging PHP" has_header x-kapelos-xdebug -b XDEBUG_SESSION=1 "$STORE_URL"

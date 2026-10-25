@@ -17,3 +17,18 @@ server {
 
     include ${MAGENTO_NGINX_CONF};
 }
+
+# Connection counts for an exporter on the stack's own network. Traefik and Varnish send nothing to this
+# port, so none of the store's addresses reach it.
+server {
+    listen 8081;
+    server_name _;
+
+    location = /nginx-status {
+        stub_status;
+    }
+
+    location / {
+        return 404;
+    }
+}

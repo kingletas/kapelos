@@ -371,8 +371,35 @@ cmd_db() {
       shift
       cmd_import "$@"
       ;;
-    *) die "kapelos db opens a prompt; kapelos db dump [FILE] and kapelos db import FILE move a database in and out" ;;
+    exporter-user) db_exporter_user ;;
+    *) die "kapelos db opens a prompt; kapelos db dump [FILE] and kapelos db import FILE move a database in and out; kapelos db exporter-user makes a login for a metrics exporter" ;;
   esac
+}
+
+# A login for a metrics exporter: the server's own status and performance_schema, and none of the store's
+# tables. Its password goes into a my.cnf readable only by you, for the exporter to mount; running this
+# again sets a new password and rewrites the file. The SQL goes in on standard input, so the password is
+# never on a command line.
+db_exporter_user() {
+  load_env
+  require_running db
+  local dir file secret
+  dir="$(site_state_dir_of "${COMPOSE_PROJECT_NAME:-kapelos}")"
+  file="$dir/exporter.my.cnf"
+  secret="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  step "Giving the exporter login the server's status, and none of ${DB_NAME:-magento}'s tables"
+  compose_exec db sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot' <<SQL
+CREATE USER IF NOT EXISTS 'exporter'@'%' IDENTIFIED BY '$secret' WITH MAX_USER_CONNECTIONS 3;
+ALTER USER 'exporter'@'%' IDENTIFIED BY '$secret' WITH MAX_USER_CONNECTIONS 3;
+GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'exporter'@'%';
+GRANT SELECT ON performance_schema.* TO 'exporter'@'%';
+SQL
+  mkdir -p "$dir"
+  (
+    umask 077
+    printf '[client]\nuser=exporter\npassword=%s\nhost=db\nport=3306\n' "$secret" >"$file"
+  )
+  echo "The exporter's login is in $file, readable only by you."
 }
 
 # A dump holds whatever customers the store holds, so it's written readable only by you.
