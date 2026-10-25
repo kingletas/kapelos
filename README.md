@@ -899,24 +899,25 @@ bin/kapelos debug indexer:reindex catalog_product_price
 
 ## Full-page caching with Varnish
 
-Out of the box Varnish passes every request straight through, so nothing is cached and nothing is stale while you work. To test caching, switch Magento to Varnish and have it write its own VCL:
+Every store Kapelos sets up serves its pages through Varnish, the way a production store does. `magento-install` (and so `demo` and `interactive`), `connect`, `adopt` and `site copy` each set Magento's page cache to Varnish and load Magento's own VCL, which Kapelos keeps at `var/sites/SITE/varnish.vcl`. What you test is what a shopper gets, cache included.
+
+To see it working in developer mode, load a page twice and look at the `X-Magento-Cache-Debug` header. It says `MISS` the first time and `HIT` after that. Checkout and the customer pages are never cached, and a shopper with a cart gets pages of their own. If it keeps saying `MISS`, wait two minutes: when the first response after a flush can't be cached, Magento's VCL stops trying for that long.
+
+To turn it off for one store, set Magento's page cache back to its own. Magento then marks every page as one no cache may keep, and Varnish passes them all:
 
 ```bash
-bin/kapelos magento config:set system/full_page_cache/caching_application 2
-bin/kapelos magento varnish:vcl:generate --export-version=7 --backend-host=web --backend-port=80 --access-list=0.0.0.0/0 --output-file=var/varnish.vcl
+bin/kapelos magento config:set system/full_page_cache/caching_application 1
 ```
 
-Set `VARNISH_VCL` in `.env` to that file on your machine, which is `var/varnish.vcl` inside your `MAGENTO_SRC`, then run `bin/kapelos up`.
-
-To check it's working, load a page twice and look at the `X-Magento-Cache-Debug` header. It says `MISS` the first time and `HIT` after that. If it keeps saying `MISS`, wait two minutes: when the first response after a flush can't be cached, Magento's VCL stops trying for that long.
+`VARNISH_VCL` in a site's settings loads a VCL of your own instead of Magento's. The file that passes everything, `./etc/varnish/default.vcl`, which older settings name, counts as no choice.
 
 A few things worth knowing:
 
-- **Purging works if Magento knows where Varnish is.** `bin/kapelos magento-install` sets that up. For a store installed some other way, run `bin/kapelos magento setup:config:set --http-cache-hosts=varnish:80`.
-- **`--access-list=0.0.0.0/0` lets any container purge the cache.** That's fine inside this stack and wrong anywhere else.
-- **On Mage-OS 3.5, the generator doesn't work.** Mage-OS swaps Magento's generator for the `Elgentos_VarnishExtended` module, which either stops with a `gracePeriod` type error or writes a file still full of placeholders like `{{ host }}`. Varnish refuses to load that file. Switch the module off to get Magento's own generator back: `bin/kapelos magento module:disable Elgentos_VarnishExtended`, then `bin/kapelos magento setup:upgrade`.
+- **Only the stack's PHP containers can purge.** Kapelos replaces the purge list Magento writes with `php`, `php-debug` and `cron`, each in parentheses so Varnish skips one that isn't running instead of refusing to start. Varnish looks those names up when it loads the VCL, so `bin/kapelos up` loads it again, which keeps the cache and learns a recreated container's new address.
+- **Purging works because Magento knows where Varnish is.** Kapelos sets `http_cache_hosts` to `varnish:80` when it installs or connects a store, so `cache:flush` empties Varnish too.
+- **Mage-OS's own VCL generator isn't used.** Mage-OS swaps `bin/magento varnish:vcl:generate` for the `Elgentos_VarnishExtended` module's, and its release 2.0.7, in Mage-OS 3.5 and 3.6, either stops with a `gracePeriod` type error or writes a file Varnish can't load. Kapelos builds Magento's own generator directly instead, so the module stays as it is and every store gets the VCL Magento itself would write.
 - **`bin/kapelos up` waits until Varnish can serve.** With Magento's VCL, that's once Magento's health check passes, which after a cold start can take up to a minute. If Varnish is still marked unhealthy from earlier, `up` says so, restarts it once and waits again.
-- **Varnish reads the file when it starts.** After you regenerate it, run `bin/kapelos restart varnish`.
+- **Varnish reads the file when it starts, and `bin/kapelos up` loads it again.** After you change it, run `bin/kapelos up`.
 
 ## Behind your own reverse proxy
 
