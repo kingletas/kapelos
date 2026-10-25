@@ -582,11 +582,18 @@ cmd_varnish() {
   compose_exec varnish varnishadm "$@"
 }
 
-# Magento's purge list, with the containers that run bin/magento in place of the addresses it was given. Each name
-# is in parentheses so Varnish skips one that isn't running when it loads the VCL, rather than refusing to start.
+# Magento's purge list, with the containers that run bin/magento in place of the addresses it was given: php-2 to
+# php-4 too, since a scaled store's admin save runs on whichever server Varnish sent it to. Each name is in
+# parentheses so Varnish skips one that isn't running when it loads the VCL, rather than refusing to start.
 purge_from_stack() {
   awk '
-    /^acl purge \{/ { print; print "    (\"php\");"; print "    (\"php-debug\");"; print "    (\"cron\");"; skip = 1; next }
+    /^acl purge \{/ {
+      print
+      split("php php-debug cron php-2 php-3 php-4", names, " ")
+      for (i = 1; i <= 6; i++) print "    (\"" names[i] "\");"
+      skip = 1
+      next
+    }
     skip && /^\}/ { skip = 0 }
     !skip { print }
   '

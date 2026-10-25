@@ -82,8 +82,8 @@ PY
       die "$install sets a store up without varnish_page_cache, so that store would send every request past Varnish to PHP"
   done
   purged="$(printf 'backend default {\n    .probe = {\n        .url = "/health_check.php";\n        .timeout = 2s;\n    }\n    .first_byte_timeout = 600s;\n}\nacl purge {\n    "localhost";\n}\n\nsub vcl_recv {\n}\n' | purge_from_stack)"
-  if [[ $purged != *'("php");'* || $purged != *'("cron");'* || $purged == *'"localhost"'* || $purged != *'sub vcl_recv {'* ]]; then
-    die "purge_from_stack doesn't turn Magento's purge list into the stack's PHP containers, each skipped when it isn't running. Varnish refuses to start on a name it can't look up"
+  if [[ $purged != *'("php");'* || $purged != *'("cron");'* || $purged != *'("php-2");'* || $purged != *'("php-4");'* || $purged == *'"localhost"'* || $purged != *'sub vcl_recv {'* ]]; then
+    die "purge_from_stack doesn't turn Magento's purge list into the stack's PHP containers, php-2 to php-4 among them, each skipped when it isn't running. Varnish refuses to start on a name it can't look up, and a scaled store's admin save purges from the server it ran on"
   fi
   mkdir -p "$scratch/vcl-home/var/sites/check-vcl"
   : >"$scratch/vcl-home/var/sites/check-vcl/varnish.vcl"
