@@ -15,6 +15,7 @@ services:
   php:
     build:
       context: ./opt/php
+      target: store
       args:
         PHP_VERSION: ${PHP_VERSION:-8.4}
         UID: ${HOST_UID:-1000}
@@ -105,7 +106,9 @@ services:
     image: nginx:${NGINX_VERSION:-1.30}
     environment:
       MAGENTO_NGINX_CONF: ${MAGENTO_NGINX_CONF:-/app/nginx.conf.sample}
-      NGINX_ENVSUBST_FILTER: MAGENTO_NGINX_CONF
+      # The store's root. A deploy target serves the live release instead; see compose.deploy-target.yaml.
+      KAPELOS_MAGE_ROOT: /app
+      NGINX_ENVSUBST_FILTER: MAGENTO_NGINX_CONF|KAPELOS_MAGE_ROOT
     volumes:
       - type: bind
         source: ./etc/nginx/default.conf.template

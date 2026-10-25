@@ -1,0 +1,3 @@
+#!/bin/sh
+# nginx runs in its own container and resolves the release symlink on every request, so there is nothing to restart.
+echo "nginx: nothing to do here (its own container, the root resolved per request)"

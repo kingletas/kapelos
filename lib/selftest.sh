@@ -25,6 +25,8 @@ cmd_check() {
     die "compose accepted an adopted site with no KAPELOS_ENV_PHP"
   fi
 
+  check_deploy_target "$scratch"
+
   echo "compose: a missing MAGENTO_SRC is refused"
   sed '/^MAGENTO_SRC=/d' "$scratch/env" >"$scratch/env-no-src"
   if docker compose --env-file "$scratch/env-no-src" -f compose.yaml config --quiet 2>/dev/null; then
@@ -517,6 +519,27 @@ adopted_copy_serves() {
   [[ $served -eq 0 && $(cksum <"$MAGENTO_SRC/app/etc/env.php") == "$before" ]]
 }
 
+# The cutover a deployment makes, by hand: a second release, the symlink moved in one rename, PHP reloaded over SSH.
+deploy_target_serves() {
+  local root="$1/deploy-root" origin="$1/origin.git" keys ssh_options jump
+  git init -q --bare "$origin"
+  deploy_target_init "$root" --origin "$origin" -y >/dev/null
+  compose --progress quiet build php
+  cmd_up >/dev/null
+  status_is 200 "$STORE_URL" || return 1
+
+  cp -a "$root/releases/$(basename "$(readlink "$root/magento_current")")/." "$root/releases/second"
+  echo second >"$root/releases/second/pub/kapelos-release.txt"
+  ln -s releases/second "$root/magento_current.next"
+  mv -T "$root/magento_current.next" "$root/magento_current"
+  keys="$KAPELOS_DEPLOY_STATE/keys"
+  ssh_options="-o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$keys/known_hosts -i $keys/id_deploy"
+  jump="ssh $ssh_options -p $DEPLOY_SSH_PORT -W %h:%p app@127.0.0.1"
+  # shellcheck disable=SC2086 # the options are words on purpose
+  ssh $ssh_options -o "ProxyCommand=$jump" -p 2222 app@php /etc/init.d/php-fpm reload >/dev/null
+  [[ $(curl -fsS "${STORE_URL}kapelos-release.txt") == second ]] && status_is 200 "$STORE_URL"
+}
+
 # With declaring refused, a queue deleted from RabbitMQ has to be reported; with it allowed again, it's declared back.
 queue_missing_reported() {
   local user="${RABBITMQ_USER:-magento}" status=0
@@ -605,6 +628,7 @@ cmd_self_test() {
   verify "a snapshot restore copies the database to the replica again" restore_reseeds_replica
   verify "scale web=1 replica=0 leaves the site exactly as it was before scaling" scaled_back_as_before "$before"
   verify "adopt runs the store from a dump as a second site, declares its queues, and leaves its env.php alone" adopted_copy_serves "$scratch"
+  verify "a deploy target serves its release, lets the deploy key in through the builder, and serves the next release after a cutover" deploy_target_serves "$scratch"
 
   echo
   [[ $SELF_TEST_FAILED -eq 0 ]] || die "self-test failed"
@@ -712,4 +736,52 @@ not_debug_routed() {
 # The store's address is HTTP, so Magento may redirect; a TLS handshake that fails gives 000.
 https_answers() {
   [[ $(http_status -k "https://localhost:${HTTPS_PORT:-8443}/") != 000 ]]
+}
+
+# A deploy target keeps every mount the base stack has but the tree at /app, and opens nothing but the builder's sshd.
+check_deploy_target() {
+  local scratch="$1" dir="$1/deploy" env="$1/env-deploy"
+  mkdir -p "$dir/root" "$dir/state/keys" "$dir/state/builder-tree" "$dir/origin.git"
+  touch "$dir/state/host_key_web" "$dir/state/host_key_builder" "$dir/state/authorized_keys" "$dir/state/keys/known_hosts"
+  cp "$scratch/env" "$env"
+  set_env_value "$env" MAGENTO_SRC "$dir/root/magento_current"
+  set_env_value "$env" DEPLOY_ROOT "$dir/root"
+  set_env_value "$env" DEPLOY_ORIGIN "$dir/origin.git"
+  set_env_value "$env" KAPELOS_DEPLOY_STATE "$dir/state"
+
+  echo "compose: base + deploy target keeps every other mount, serves the live release and publishes only the builder"
+  docker compose --env-file "$env" -f compose.yaml --profile cron config --format json >"$dir/base.json"
+  docker compose --env-file "$env" -f compose.yaml -f compose.deploy-target.yaml --profile cron config --format json >"$dir/target.json"
+  python3 - "$dir/base.json" "$dir/target.json" "$dir/root" <<'PY_CHECK' || die "the deploy target isn't the stack compose.deploy-target.yaml promises"
+import json, sys
+base = json.load(open(sys.argv[1]))["services"]
+target = json.load(open(sys.argv[2]))["services"]
+root = sys.argv[3]
+def targets(services, name):
+    return {v["target"] for v in services[name].get("volumes", [])}
+for name in ("php", "php-debug", "cron", "web", "web-debug"):
+    lost = targets(base, name) - {"/app"} - targets(target, name)
+    assert not lost, f"{name} lost {sorted(lost)}"
+    assert "/app" not in targets(target, name), f"{name} still mounts a tree at /app"
+    assert root in targets(target, name), f"{name} doesn't mount the deploy root at its own path"
+for name in ("php", "php-debug", "cron", "builder"):
+    assert target[name]["image"].endswith("-deploy:8.4"), f"{name} doesn't run the deploy-target image"
+for name in ("web", "web-debug"):
+    assert target[name]["environment"]["KAPELOS_MAGE_ROOT"] == root + "/magento_current", f"{name} doesn't serve the live release"
+published = {name: s.get("ports", []) for name, s in target.items() if s.get("ports") and name not in base}
+assert list(published) == ["builder"], f"the deploy target publishes {sorted(published)}"
+assert all(p["host_ip"] == "127.0.0.1" for p in published["builder"]), "the builder's sshd is published beyond 127.0.0.1"
+assert not target["php"].get("ports"), "the web node publishes a port"
+assert "/srv/store.git" in targets(target, "builder"), "the builder has no origin to build from"
+PY_CHECK
+
+  echo "deploy target: sshd lets in one user by key, as that user, and only the builder forwards, to the web node alone"
+  local config=opt/php/deploy-target/sshd_config line
+  for line in 'AllowUsers app' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
+    'AllowTcpForwarding no' 'AllowAgentForwarding no'; do
+    grep -qx "$line" "$config" || die "$config has lost: $line"
+  done
+  grep -q 'PermitOpen=php:2222' opt/php/deploy-target/entrypoint || die "the builder forwards to more than the web node's sshd"
+  grep -qx '    StrictHostKeyChecking yes' opt/php/deploy-target/ssh_config || die "the builder's upload no longer checks the web node's host key"
+  grep -q "echo 'app ALL=(app) NOPASSWD: ALL'" opt/php/Dockerfile || die "sudo on a deploy target allows more than becoming app"
 }

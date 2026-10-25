@@ -101,6 +101,7 @@ PROJECT_KEYS="MARIADB_VERSION"
 . lib/sites.sh
 . lib/stack.sh
 . lib/scale.sh
+. lib/target.sh
 cmd_up() { echo "up \$ENV_FILE" >>"\$LOG"; }
 require_running() { :; }
 clear_cache_files() { echo "cache files" >>"\$LOG"; }

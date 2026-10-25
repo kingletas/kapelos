@@ -1,0 +1,16 @@
+# sshd for a deploy target, run as app rather than root, so app is the only user it can let in, and only by key.
+Port 2222
+HostKey /etc/kapelos-deploy/host_key
+AuthorizedKeysFile /etc/kapelos-deploy/authorized_keys
+PidFile /tmp/sshd.pid
+AllowUsers app
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+UsePAM no
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+PermitUserEnvironment no
+Subsystem sftp internal-sftp

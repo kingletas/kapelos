@@ -1,0 +1,14 @@
+#!/bin/sh
+# Starts sshd as app, then hands process 1 to the service's own command.
+#
+# The builder is also how a deployment reaches the web node, so it alone forwards, and only to the web node's sshd.
+# sshd is started rather than supervised: if it dies, recreating the container brings it back.
+set -eu
+
+if [ "${KAPELOS_SSH_ROLE:-web}" = builder ]; then
+    /usr/sbin/sshd -f /etc/ssh/kapelos_sshd_config -o AllowTcpForwarding=local -o PermitOpen=php:2222
+else
+    /usr/sbin/sshd -f /etc/ssh/kapelos_sshd_config
+fi
+
+exec "$@"

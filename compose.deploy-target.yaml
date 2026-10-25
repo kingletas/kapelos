@@ -1,0 +1,209 @@
+# A store as a deploy target: a web server a deployment tool reaches over SSH, with releases under DEPLOY_ROOT and
+# a build host beside it. Kapelos adds this file when a site sets DEPLOY_ROOT; see "A store you deploy to" in the
+# README.
+#
+# DEPLOY_ROOT holds releases/, shared/ and the magento_current symlink, and is mounted at its own path, so a link a
+# deployment writes into a release resolves the same in every container and on this machine. It is also mounted at
+# /srv/deploy-root, which the image's /app points into, so /app is always the live release.
+#
+# The store's own php container is the web node, under its own name, so Varnish, nginx and Traefik reach it as they
+# always do. Each service lists its volumes whole (!override) because the tree is no longer mounted at /app, and the
+# services that extend php or web in compose.yaml are listed too, because extends is resolved before this file is
+# merged. kapelos check fails if one of the base file's other mounts goes missing here.
+
+x-deploy-root: &deploy-root
+  type: bind
+  source: ${DEPLOY_ROOT:?a deploy target needs DEPLOY_ROOT}
+  target: ${DEPLOY_ROOT:?a deploy target needs DEPLOY_ROOT}
+  bind:
+    create_host_path: false
+
+x-deploy-root-link: &deploy-root-link
+  type: bind
+  source: ${DEPLOY_ROOT:?a deploy target needs DEPLOY_ROOT}
+  target: /srv/deploy-root
+  bind:
+    create_host_path: false
+
+x-php-ini: &php-ini
+  type: bind
+  source: ./etc/php/kapelos.ini
+  target: /usr/local/etc/php/conf.d/zz-kapelos.ini
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-fpm-pool: &fpm-pool
+  type: bind
+  source: ./etc/php/fpm-pool.conf
+  target: /usr/local/etc/php-fpm.d/zz-kapelos.conf
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-nginx-template: &nginx-template
+  type: bind
+  source: ./etc/nginx/default.conf.template
+  target: /etc/nginx/templates/default.conf.template
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-nginx-fastcgi: &nginx-fastcgi
+  type: bind
+  source: ./etc/nginx/fastcgi_params
+  target: /etc/nginx/fastcgi_params
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-nginx-stores: &nginx-stores
+  type: bind
+  source: ${NGINX_STORES:-./etc/nginx/stores.conf}
+  target: /etc/nginx/kapelos/stores.conf
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-deploy-root-read: &deploy-root-read
+  type: bind
+  source: ${DEPLOY_ROOT:?}
+  target: ${DEPLOY_ROOT:?}
+  read_only: true
+  bind:
+    create_host_path: false
+
+x-web-env: &web-env
+  KAPELOS_MAGE_ROOT: ${DEPLOY_ROOT:?}/magento_current
+  MAGENTO_NGINX_CONF: ${DEPLOY_ROOT:?}/magento_current/nginx.conf.sample
+
+x-deploy-image: &deploy-image
+  build:
+    target: deploy-target
+  image: ${COMPOSE_PROJECT_NAME:-kapelos}-deploy:${PHP_VERSION:-8.4}
+
+services:
+  php:
+    <<: *deploy-image
+    entrypoint: ["/usr/local/bin/kapelos-deploy-entrypoint"]
+    command: ["docker-php-entrypoint", "php-fpm"]
+    environment:
+      KAPELOS_SSH_ROLE: web
+    volumes: !override
+      - *deploy-root
+      - *deploy-root-link
+      - *php-ini
+      - *fpm-pool
+      # The web node gets its own host key and the deploy key's public half; the private half never reaches it.
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/host_key_web
+        target: /etc/kapelos-deploy/host_key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/authorized_keys
+        target: /etc/kapelos-deploy/authorized_keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - composer:/home/app/.composer
+      - php-socket:/run/php
+
+  # Xdebug's copy and the scheduled jobs run the same release, and need no sshd.
+  php-debug:
+    <<: *deploy-image
+    entrypoint: ["docker-php-entrypoint"]
+    command: ["php-fpm"]
+    volumes: !override
+      - *deploy-root
+      - *deploy-root-link
+      - *php-ini
+      - *fpm-pool
+      - composer:/home/app/.composer
+      - php-debug-socket:/run/php
+
+  cron:
+    <<: *deploy-image
+    volumes: !override
+      - *deploy-root
+      - *deploy-root-link
+      - *php-ini
+      - *fpm-pool
+      - composer:/home/app/.composer
+      - php-socket:/run/php
+
+  web:
+    environment: *web-env
+    volumes: !override
+      - *nginx-template
+      - *nginx-fastcgi
+      - *nginx-stores
+      - *deploy-root-read
+      - php-socket:/run/php
+
+  web-debug:
+    environment: *web-env
+    volumes: !override
+      - *nginx-template
+      - *nginx-fastcgi
+      - *nginx-stores
+      - *deploy-root-read
+      - php-debug-socket:/run/php
+
+  # The build host. It builds in a tree of its own, so a release really crosses the network to the web node, and it
+  # is the one way in: its sshd is published on 127.0.0.1 only and forwards to nothing but the web node's.
+  builder:
+    image: ${COMPOSE_PROJECT_NAME:-kapelos}-deploy:${PHP_VERSION:-8.4}
+    pull_policy: never
+    entrypoint: ["/usr/local/bin/kapelos-deploy-entrypoint"]
+    command: ["sleep", "infinity"]
+    environment:
+      KAPELOS_SSH_ROLE: builder
+      # A build compiles every class in the store, so it takes the store's PHP settings and leaves Xdebug out.
+      PHP_INI_SCAN_DIR: /usr/local/etc/php/conf.d
+      XDEBUG_MODE: "off"
+    volumes:
+      - *php-ini
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/builder-tree
+        target: ${DEPLOY_ROOT:?}
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DEPLOY_ORIGIN:?a deploy target needs DEPLOY_ORIGIN, the bare repository it builds from}
+        target: /srv/store.git
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/host_key_builder
+        target: /etc/kapelos-deploy/host_key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/authorized_keys
+        target: /etc/kapelos-deploy/authorized_keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/keys/known_hosts
+        target: /etc/kapelos-deploy/known_hosts
+        read_only: true
+        bind:
+          create_host_path: false
+      # The upload runs here, so the deploy key is here too, at the path the deployment's inventory names on the
+      # machine it runs from.
+      - type: bind
+        source: ${KAPELOS_DEPLOY_STATE:?}/keys
+        target: ${KAPELOS_DEPLOY_STATE:?}/keys
+        read_only: true
+        bind:
+          create_host_path: false
+      - composer:/home/app/.composer
+    ports:
+      - "127.0.0.1:${DEPLOY_SSH_PORT:-2222}:2222"
+    mem_limit: 4g
+    restart: unless-stopped

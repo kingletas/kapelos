@@ -1,0 +1,9 @@
+# How the builder reaches the web node to upload a release: by its name on the store's network, as app, checking the
+# host key Kapelos made, and never stopping to ask, so a missing key fails at once instead of at rsync's timeout.
+Host php
+    Port 2222
+    User app
+    UserKnownHostsFile /etc/kapelos-deploy/known_hosts
+    StrictHostKeyChecking yes
+    BatchMode yes
+    IdentitiesOnly yes

@@ -104,6 +104,7 @@ PROJECT_KEYS="MARIADB_VERSION"
 . lib/store.sh
 . lib/stack.sh
 . lib/scale.sh
+. lib/target.sh
 . lib/seed.sh
 cmd_up() { echo "up \$ENV_FILE" >>"\$LOG"; }
 require_running() { :; }

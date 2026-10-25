@@ -535,6 +535,7 @@ scale_names_free() {
 
 cmd_scale() {
   load_env
+  refuse_on_deploy_target "It runs on one web server for now"
   case "${1:-}" in
     '')
       scale_status

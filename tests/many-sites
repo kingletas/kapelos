@@ -82,6 +82,7 @@ PROJECT_KEYS=""
 . lib/sites.sh
 . lib/stack.sh
 . lib/scale.sh
+. lib/target.sh
 scale_before_up() {
   echo "reached the stack"
   exit 0
@@ -217,6 +218,7 @@ SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
 . lib/sites.sh
 . lib/stack.sh
 . lib/scale.sh
+. lib/target.sh
 snapshot_names() { :; }
 step() {
   echo "reached the copy"
