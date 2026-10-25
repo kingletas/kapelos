@@ -59,9 +59,17 @@ PY
     die "etc/nginx/default.conf.template has no server on 8081 for the status pages"
   if ! holds -q 'fastcgi_param QUERY_STRING openmetrics;' <<<"$status_server" ||
     ! holds -q 'fastcgi_pass_request_headers off;' <<<"$status_server" ||
+    ! holds -q 'fastcgi_pass_request_body off;' <<<"$status_server" ||
     holds -qE '^[[:space:]]*include' <<<"$status_server"; then
-    die "the server on 8081 passes PHP-FPM something a client chose. Its /fpm-status sets every parameter itself, includes no fastcgi_params and passes no request headers, or a client could name a script or set a PHP value through it"
+    die "the server on 8081 passes PHP-FPM something a client chose. Its /fpm-status sets every parameter itself, includes no fastcgi_params and passes no request headers or body, or a client could name a script or set a PHP value through it"
   fi
+
+  echo "varnish: no header reaches the shared log an exporter can read"
+  local tag
+  for tag in ReqHeader ReqUnset RespHeader RespUnset BereqHeader BereqUnset BerespHeader BerespUnset ObjHeader ObjUnset BogoHeader LostHeader; do
+    holds -q "vsl_mask=.*-$tag\\b" <"$scratch/config.json" ||
+      die "Varnish's vsl_mask doesn't mask $tag. The varnish-vsm volume an exporter mounts carries Varnish's request log, and with $tag in it a Cookie or a Set-Cookie can be read there"
+  done
   if grep -q '8081' etc/traefik/dynamic/kapelos.yml etc/varnish/default.vcl compose.proxy.yaml ||
     python3 -c 'import json,sys; ports=json.load(open(sys.argv[1]))["services"]["web"].get("ports", []); sys.exit(0 if any("8081" in str(p) for p in ports) else 1)' "$scratch/config.json"; then
     die "port 8081 is routed or published. nginx's status is for an exporter on the stack's own network, never for an address of the store"

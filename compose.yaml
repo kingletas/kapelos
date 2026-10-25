@@ -143,7 +143,12 @@ services:
 
   varnish:
     image: varnish:${VARNISH_VERSION:-8.0}
-    command: -p http_resp_hdr_len=65536 -p http_resp_size=196608 -p workspace_backend=262144
+    # vsl_mask keeps every header out of the shared log, Cookie and Set-Cookie with them, because anything given
+    # the varnish-vsm volume can read that log. varnishlog then shows no headers; the counters are unchanged.
+    command: >-
+      -p http_resp_hdr_len=65536 -p http_resp_size=196608 -p workspace_backend=262144
+      -p vsl_mask=-ReqHeader,-ReqUnset,-RespHeader,-RespUnset,-BogoHeader,-LostHeader
+      -p vsl_mask=-BereqHeader,-BereqUnset,-BerespHeader,-BerespUnset,-ObjHeader,-ObjUnset
     volumes:
       - type: bind
         source: ${VARNISH_VCL:-./etc/varnish/default.vcl}
