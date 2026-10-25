@@ -57,6 +57,7 @@ load_env() {
   load_project_settings
   derive_settings
   derive_scale
+  derive_vcl
 }
 
 project_value_ok() {
@@ -99,6 +100,23 @@ load_project_settings() {
 # Where Kapelos keeps what it generates for one site.
 site_state_dir() {
   site_state_dir_of "${COMPOSE_PROJECT_NAME:-kapelos}"
+}
+
+# Magento's own VCL for this site, which varnish_page_cache writes.
+site_vcl() {
+  printf '%s/%s/varnish.vcl' "$KAPELOS_HOME" "$(site_state_dir)"
+}
+
+# A site Kapelos wrote Magento's VCL for serves through it, unless VARNISH_VCL in its settings names a VCL of its
+# own. The pass-through file is what every site's settings were given before Kapelos wrote one, so it is no choice.
+derive_vcl() {
+  local file
+  file="$(site_vcl)"
+  # One found for another site earlier in the same command is not this site's.
+  [[ -z ${KAPELOS_FOUND_VCL:-} || ${VARNISH_VCL:-} != "$KAPELOS_FOUND_VCL" ]] || unset VARNISH_VCL
+  unset KAPELOS_FOUND_VCL
+  [[ ${VARNISH_VCL:-} != ./etc/varnish/default.vcl ]] || unset VARNISH_VCL
+  [[ -n ${VARNISH_VCL:-} || ! -f $file ]] || export VARNISH_VCL="$file" KAPELOS_FOUND_VCL="$file"
 }
 
 # STORES becomes nginx's hostname-to-store map, and every hostname the reverse proxy sends here.

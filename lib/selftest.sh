@@ -75,6 +75,30 @@ PY
     die "port 8081 is routed or published. nginx's status is for an exporter on the stack's own network, never for an address of the store"
   fi
 
+  echo "varnish: every way a store is set up serves it through Varnish, with a purge list Varnish can always load"
+  local install purged
+  for install in cmd_magento_install cmd_connect cmd_adopt site_copy; do
+    declare -f "$install" | holds -q 'varnish_page_cache' ||
+      die "$install sets a store up without varnish_page_cache, so that store would send every request past Varnish to PHP"
+  done
+  purged="$(printf 'backend default {\n    .probe = {\n        .url = "/health_check.php";\n        .timeout = 2s;\n    }\n    .first_byte_timeout = 600s;\n}\nacl purge {\n    "localhost";\n}\n\nsub vcl_recv {\n}\n' | purge_from_stack)"
+  if [[ $purged != *'("php");'* || $purged != *'("cron");'* || $purged == *'"localhost"'* || $purged != *'sub vcl_recv {'* ]]; then
+    die "purge_from_stack doesn't turn Magento's purge list into the stack's PHP containers, each skipped when it isn't running. Varnish refuses to start on a name it can't look up"
+  fi
+  mkdir -p "$scratch/vcl-home/var/sites/check-vcl"
+  : >"$scratch/vcl-home/var/sites/check-vcl/varnish.vcl"
+  [[ $(KAPELOS_HOME="$scratch/vcl-home" COMPOSE_PROJECT_NAME=kapelos-check-vcl VARNISH_VCL=./etc/varnish/default.vcl \
+    bash -c "$(declare -f site_state_dir site_state_dir_of site_vcl derive_vcl); derive_vcl; printf '%s' \"\$VARNISH_VCL\"") == \
+    "$scratch/vcl-home/var/sites/check-vcl/varnish.vcl" ]] ||
+    die "settings that name the pass-through VCL, as every site's were given, keep Varnish passing everything after Kapelos writes Magento's VCL"
+  [[ $(KAPELOS_HOME="$scratch/vcl-home" COMPOSE_PROJECT_NAME=kapelos-check-vcl VARNISH_VCL=/srv/own.vcl \
+    bash -c "$(declare -f site_state_dir site_state_dir_of site_vcl derive_vcl); derive_vcl; printf '%s' \"\$VARNISH_VCL\"") == /srv/own.vcl ]] ||
+    die "a VCL of the site's own in VARNISH_VCL is replaced by Magento's, so the store can't load its own"
+  declare -f cmd_up | holds -q 'varnish_reload' ||
+    die "kapelos up doesn't load the VCL again, so after php is recreated Varnish refuses Magento's purges from its new address"
+  declare -f cmd_up | awk '/scale_seed_before_up/ { seeded = 1 } /--wait --remove-orphans/ { found = 1; ok = seeded; exit } END { exit !(found && ok) }' ||
+    die "kapelos up waits on the store before seeding a new replica. Magento's health check fails on a replica with no database, so Varnish's probe marks the store sick and the wait never ends"
+
   echo "project: a store's allowed settings are read, and STORES becomes nginx's map"
   mkdir -p "$scratch/store/.kapelos/commands"
   write_env "$scratch/env-project" "MAGENTO_SRC=$scratch/store" "COMPOSE_PROJECT_NAME=kapelos-check-project" "PROXY_NETWORK=proxy"
@@ -284,13 +308,16 @@ assert "--log-bin-trust-function-creators=1" in services["db"]["command"], "trig
 assert "--read-only=1" in services["db-replica"]["command"], "the replica is writable"
 assert mounted("varnish", "/etc/varnish/site.vcl"), "Varnish does not load the site VCL beside the round robin"
 assert "web-2" in services["varnish"]["depends_on"], "Varnish does not restart when web-2 is recreated"
+assert "nginx-2" in services["web-2"]["networks"]["default"]["aliases"], "web-2 has no name of its own for Varnish"
+hostnames = [service.get("hostname") for service in services.values()]
+assert "web" not in hostnames and "nginx-2" not in hostnames, "a host name answers for a name Varnish connects to, so Varnish finds two addresses"
 ' <<<"$scaled" || die "the scaled stack is not the shape kapelos scale promises"
   # It holds absolute paths, which run as long as the folder Kapelos lives in.
   yamllint --strict -d '{extends: default, rules: {document-start: disable, line-length: disable}}' var/sites/check-scale/scale.yaml
 
   echo "scale: the round robin compiles around the site's own VCL"
   # Varnish looks each backend's name up while compiling, so the names are given an address here.
-  docker run --rm --add-host web:127.0.0.1 --add-host web-2:127.0.0.1 \
+  docker run --rm --add-host web:127.0.0.1 --add-host nginx-2:127.0.0.1 \
     -v "$KAPELOS_HOME/var/sites/check-scale/scale.vcl:/etc/varnish/default.vcl:ro" \
     -v "$KAPELOS_HOME/etc/varnish/default.vcl:/etc/varnish/site.vcl:ro" \
     --entrypoint varnishd "varnish:$(env_value "$env" VARNISH_VERSION)" -C -f /etc/varnish/default.vcl >/dev/null 2>&1 ||
@@ -410,6 +437,29 @@ has_header() {
   curl -s -o /dev/null -D - "$@" | holds -qi "^$header"
 }
 
+# What Magento's VCL says it did with a request: HIT, MISS or UNCACHEABLE.
+cache_said() {
+  curl -s -o /dev/null -D - "$1" | tr -d '\r' | awk -F': ' 'tolower($1) == "x-magento-cache-debug" { print $2 }'
+}
+
+# A page Magento's VCL passes straight to PHP, asked twice so a cached copy would show.
+status_and_not_cached() {
+  local said
+  status_is 200 "$1"
+  said="$(cache_said "$1")"
+  [[ $said != HIT ]]
+}
+
+# The same page twice from a client with no cookies is a miss and then a hit, and Magento's cache:flush purges it.
+varnish_caches_and_purges() {
+  local url="${STORE_URL}?kapelos-selftest=varnish"
+  exec_quiet php php bin/magento cache:flush full_page </dev/null
+  [[ $(cache_said "$url") == MISS ]] || return 1
+  [[ $(cache_said "$url") == HIT ]] || return 1
+  exec_quiet php php bin/magento cache:flush full_page </dev/null
+  [[ $(cache_said "$url") == MISS ]]
+}
+
 # Asked from the PHP container, which is on the stack's network and is not the nginx serving the status.
 nginx_status_inside() {
   exec_quiet php curl -s http://web:8081/nginx-status </dev/null | holds -q '^Active connections:'
@@ -430,9 +480,12 @@ xdebug_off_in_php() {
   [[ $(exec_quiet php php -r 'echo json_encode(xdebug_info("mode"));') == "[]" ]]
 }
 
+# A key planted before the reset is gone after it. Valkey isn't left at zero keys, since Varnish's health probe
+# runs Magento every few seconds and Magento writes its configuration back.
 valkey_empty_after_reset() {
+  exec_quiet valkey-cache valkey-cli SET kapelos:self-test:reset planted >/dev/null
   cmd_cache_reset
-  [[ $(exec_quiet valkey-cache valkey-cli DBSIZE) == 0 ]]
+  [[ $(exec_quiet valkey-cache valkey-cli EXISTS kapelos:self-test:reset) == 0 ]]
 }
 
 install_refused() {
@@ -492,7 +545,9 @@ cmd_self_test() {
   ENV_FILE="$scratch/env"
   SELF_TEST_SCRATCH="$scratch"
   # This replaces the queue's own trap, so the turn at heavy work is given back here too.
-  trap 'compose down -v >/dev/null 2>&1; remove_self_test_volumes; rm -rf "$SELF_TEST_SCRATCH"; heavy_turn_release' EXIT
+  # What an earlier self-test left in the site's state folder, its VCL among them, would start this one's store.
+  rm -rf var/sites/self-test
+  trap 'compose down -v >/dev/null 2>&1; remove_self_test_volumes; rm -rf "$SELF_TEST_SCRATCH" var/sites/self-test; heavy_turn_release' EXIT
   write_env "$ENV_FILE" \
     "COMPOSE_PROJECT_NAME=kapelos-self-test" \
     "MAGENTO_SRC=$scratch/magento" \
@@ -510,6 +565,8 @@ cmd_self_test() {
   echo "Self-test"
   verify "the storefront answers" status_is 200 "$STORE_URL"
   verify "the admin answers" status_is 200 "${STORE_URL}admin/"
+  verify "Varnish serves a page from cache, and Magento's cache:flush purges it" varnish_caches_and_purges
+  verify "checkout is never served from cache" status_and_not_cached "${STORE_URL}checkout/cart/"
   verify "PHP-FPM's status is not a page of the store" status_is 404 "${STORE_URL}fpm-status"
   verify "nginx's status is not a page of the store" status_is 404 "${STORE_URL}nginx-status"
   verify "nginx's status answers on the stack's own network" nginx_status_inside
@@ -567,9 +624,10 @@ site_fingerprint() {
   } | sha256_stdin
 }
 
+# Asked of the cart, which Magento marks uncacheable, so every request reaches a web server and names the one it reached.
 server_header_values() {
   for _ in 1 2 3 4; do
-    curl -s -o /dev/null -D - "$STORE_URL" | tr -d '\r' | sed -n 's/^[Xx]-[Kk]apelos-[Ss]erver: //p'
+    curl -s -o /dev/null -D - "${STORE_URL}checkout/cart/" | tr -d '\r' | sed -n 's/^[Xx]-[Kk]apelos-[Ss]erver: //p'
   done
 }
 
