@@ -668,8 +668,6 @@ varnish_page_cache() {
   magento cache:flush full_page >/dev/null
 }
 
-# Varnish looks the purge list's names up when it loads a VCL, so a php container recreated since then has an address
-# it doesn't know, and Magento's purges are refused. Loading the same VCL again looks them up anew and keeps the cache.
 # Magento's health probe fails while a deploy rewrites the code, and Varnish then answers 503 until 5 of its last 10
 # probes pass, about 40 s at 5 s apart. This waits for that, so the store answers once the command says it's done.
 varnish_wait_healthy() {
@@ -685,6 +683,8 @@ varnish_wait_healthy() {
   done
 }
 
+# Varnish looks the purge list's names up when it loads a VCL, so a php container recreated since then has an address
+# it doesn't know, and Magento's purges are refused. Loading the same VCL again looks them up anew and keeps the cache.
 varnish_reload() {
   [[ -n ${VARNISH_VCL:-} ]] || return 0
   # A Varnish that isn't running loads the file afresh when it starts.
