@@ -139,6 +139,7 @@ Working in the store
                          Put back the newest snapshot, whatever it is called
   valkey [cache|session] valkey-cli on the cache or the session instance
   varnish ARGS...        varnishadm in the Varnish container: kapelos varnish ban.list
+  varnish on             Serve a store set up before Kapelos did so through Varnish, with Magento's VCL
   cache-reset            Empty every cache: Magento, Valkey and Varnish. Sessions are kept
   cron [on|off|run]      Magento's scheduled jobs and queue consumers; off unless you turn them on
   queues                 Declare the store's queues in RabbitMQ without setup:upgrade, and check each is there

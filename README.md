@@ -928,6 +928,8 @@ bin/kapelos debug indexer:reindex catalog_product_price
 
 Every store Kapelos sets up serves its pages through Varnish, the way a production store does. `magento-install` (and so `demo` and `interactive`), `connect`, `adopt` and `site copy` each set Magento's page cache to Varnish and load Magento's own VCL, which Kapelos keeps at `var/sites/SITE/varnish.vcl`. What you test is what a shopper gets, cache included.
 
+A store set up before Kapelos did this still sends every request past Varnish to PHP. `bin/kapelos varnish on` switches it with the same step, and prints the way back before it changes anything. On a store already switched it says so and changes nothing.
+
 To see it working in developer mode, load a page twice and look at the `X-Magento-Cache-Debug` header. It says `MISS` the first time and `HIT` after that. Checkout and the customer pages are never cached, and a shopper with a cart gets pages of their own. If it keeps saying `MISS`, wait two minutes: when the first response after a flush can't be cached, Magento's VCL stops trying for that long.
 
 To turn it off for one store, set Magento's page cache back to its own. Magento then marks every page as one no cache may keep, and Varnish passes them all:
