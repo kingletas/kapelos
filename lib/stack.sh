@@ -588,12 +588,32 @@ cmd_varnish() {
   compose_exec varnish varnishadm "$@"
 }
 
+# Whether a VCL's purge list lets every address purge: 0.0.0.0/0 or ::/0, with the mask inside the quotes or after.
+purge_open() {
+  awk '
+    /^[[:space:]]*acl[[:space:]]+purge[[:space:]]*\{/ { inside = 1; next }
+    inside && /^[[:space:]]*\}/ { inside = 0 }
+    inside {
+      gsub(/[[:space:]]/, "")
+      if ($0 ~ /^"(0\.0\.0\.0|::)(\/0"|"\/0)([^0-9]|$)/) open = 1
+    }
+    END { exit !open }
+  ' "$1"
+}
+
 # The step every install runs, for a store set up before it did. The way back is printed before anything changes,
-# and a store already serving through Magento's VCL is left as it is.
+# and a store already serving through Magento's VCL, or loading one of its own, is left as it is.
 varnish_on() {
   local file caching
   load_env
   file="$(site_vcl)"
+  if [[ -n ${VARNISH_VCL:-} && $VARNISH_VCL != "$file" ]]; then
+    echo "This store loads a VCL of its own, $VARNISH_VCL, which VARNISH_VCL in its settings names, so Kapelos leaves it. Nothing changed."
+    if [[ -f $VARNISH_VCL ]] && purge_open "$VARNISH_VCL"; then
+      echo "        Its purge list lets every address purge, and the store is reached at ${BIND_ADDRESS:-127.0.0.1}:${HTTP_PORT:-8080}, so whatever reaches that can empty its cache."
+    fi
+    return 0
+  fi
   caching="$(exec_quiet php php bin/magento config:show system/full_page_cache/caching_application </dev/null 2>/dev/null || true)"
   if [[ $caching == 2 && -f $file && ${VARNISH_VCL:-} == "$file" ]]; then
     echo "This store already serves its pages through Varnish, with Magento's VCL at $file. Nothing changed."

@@ -102,6 +102,33 @@ PY
   done
   declare -f varnish_on | awk '/The way back/ { warned = 1 } /varnish_page_cache/ { found = 1; ok = warned; exit } END { exit !(found && ok) }' ||
     die "kapelos varnish on doesn't run varnish_page_cache, or runs it before printing the way back, so a store it switches either isn't switched or can't be switched back by what it said"
+  echo "varnish on: a site's own VCL is left as it is, and an open purge list is named with the store's address"
+  mkdir -p "$scratch/own-vcl"
+  printf 'acl purge {\n    "localhost";\n    "172.16.0.0"/12;\n}\n' >"$scratch/own-vcl/narrow.vcl"
+  printf 'acl purge {\n    "0.0.0.0/0";\n}\n' >"$scratch/own-vcl/open.vcl"
+  printf 'acl purge {\n    "::"/0;\n}\n' >"$scratch/own-vcl/open6.vcl"
+  printf 'acl purge {\n    ! "0.0.0.0"/0;\n    "10.0.0.0"/8;\n}\n' >"$scratch/own-vcl/negated.vcl"
+  local said own
+  # Every call that would change the store is stood in for, so a case that reaches one says so in its output.
+  varnish_on_with() {
+    KAPELOS_HOME="$scratch/vcl-home" COMPOSE_PROJECT_NAME=kapelos-check-vcl VARNISH_VCL="$1" BIND_ADDRESS=127.0.0.1 HTTP_PORT=8380 \
+      bash -c "$(declare -f site_state_dir site_state_dir_of site_vcl derive_vcl purge_open varnish_on)
+        load_env() { derive_vcl; }; exec_quiet() { echo 1; }; varnish_page_cache() { echo SWITCHED; }; varnish_on"
+  }
+  for own in narrow negated; do
+    said="$(varnish_on_with "$scratch/own-vcl/$own.vcl")"
+    [[ $said == *"Nothing changed."* && $said != *SWITCHED* && $said != *"every address"* && $said != *"way back"* ]] ||
+      die "kapelos varnish on, on a site with its own VCL and a narrow purge list ($own), changes the store or warns of an open list: $said"
+  done
+  for own in open open6; do
+    said="$(varnish_on_with "$scratch/own-vcl/$own.vcl")"
+    [[ $said == *"Nothing changed."* && $said != *SWITCHED* && $said == *"every address"* && $said == *"127.0.0.1:8380"* ]] ||
+      die "kapelos varnish on, on a site whose own VCL lets every address purge ($own), doesn't say so with the store's address: $said"
+  done
+  rm -f "$scratch/vcl-home/var/sites/check-vcl/varnish.vcl"
+  said="$(varnish_on_with ./etc/varnish/default.vcl)"
+  [[ $said == *SWITCHED* ]] ||
+    die "kapelos varnish on treats the pass-through VCL, which every site's settings were given, as a VCL of the site's own and switches nothing: $said"
   declare -f cmd_up | holds -q 'varnish_reload' ||
     die "kapelos up doesn't load the VCL again, so after php is recreated Varnish refuses Magento's purges from its new address"
   declare -f cmd_up | awk '/scale_seed_before_up/ { seeded = 1 } /--wait --remove-orphans/ { found = 1; ok = seeded; exit } END { exit !(found && ok) }' ||
