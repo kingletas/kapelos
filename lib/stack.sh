@@ -321,6 +321,7 @@ cmd_up() {
   fi
 
   scale_before_up
+  scale_seed_before_up
   # A web server or replica scaled away is an orphan, and goes.
   if ! compose up -d --wait --remove-orphans; then
     local unhealthy
@@ -332,6 +333,7 @@ cmd_up() {
     compose up -d --wait --remove-orphans
   fi
   scale_after_up
+  varnish_reload
   echo "Store: ${MAGENTO_BASE_URL:-http://localhost:8080/}  ·  kapelos info shows everything else"
 }
 
@@ -580,6 +582,124 @@ cmd_varnish() {
   compose_exec varnish varnishadm "$@"
 }
 
+# Magento's purge list, with the containers that run bin/magento in place of the addresses it was given: php-2 to
+# php-4 too, since a scaled store's admin save runs on whichever server Varnish sent it to. Each name is in
+# parentheses so Varnish skips one that isn't running when it loads the VCL, rather than refusing to start.
+purge_from_stack() {
+  awk '
+    /^acl purge \{/ {
+      print
+      split("php php-debug cron php-2 php-3 php-4", names, " ")
+      for (i = 1; i <= 6; i++) print "    (\"" names[i] "\");"
+      skip = 1
+      next
+    }
+    skip && /^\}/ { skip = 0 }
+    !skip { print }
+  '
+}
+
+# Magento's own VCL for Varnish 7 and later, from Magento's own generator built directly. Mage-OS swaps in
+# Elgentos_VarnishExtended for it through a preference, and its release 2.0.7 writes a VCL Varnish can't load,
+# so asking bin/magento would give that module's instead. Read on standard input by PHP at the Magento root.
+magento_vcl_script() {
+  cat <<'PHP'
+<?php
+use Magento\Framework\App\Bootstrap;
+use Magento\Framework\App\Config\ScopeConfigInterface;
+use Magento\Framework\App\Filesystem\DirectoryList;
+use Magento\Framework\App\Request\Http as Request;
+use Magento\Framework\Filesystem\Directory\ReadFactory;
+use Magento\Framework\Module\Dir\Reader;
+use Magento\Framework\Serialize\Serializer\Json;
+use Magento\PageCache\Model\Config;
+use Magento\PageCache\Model\Varnish\VclGenerator;
+use Magento\PageCache\Model\Varnish\VclTemplateLocator;
+use Magento\Store\Model\ScopeInterface;
+
+require 'app/bootstrap.php';
+$objects = Bootstrap::create(BP, $_SERVER)->getObjectManager();
+$config = $objects->get(ScopeConfigInterface::class);
+$themes = $config->getValue(Config::XML_VARNISH_PAGECACHE_DESIGN_THEME_REGEX, ScopeInterface::SCOPE_STORE);
+$locator = new VclTemplateLocator(
+    $objects->get(Reader::class),
+    $objects->get(ReadFactory::class),
+    $config,
+    $objects->get(DirectoryList::class)
+);
+$generator = new VclGenerator(
+    $locator,
+    'web',
+    '80',
+    ['localhost'],
+    300,
+    $config->getValue(Request::XML_PATH_OFFLOADER_HEADER),
+    $themes ? $objects->get(Json::class)->unserialize($themes) : []
+);
+echo $generator->generateVcl('7');
+PHP
+}
+
+# Every store Kapelos sets up serves its pages through Varnish: Magento's page cache set to Varnish, and Magento's
+# own VCL loaded in place of the one that passes everything. A store's own VARNISH_VCL still wins. The VCL is
+# written before anything of the store changes, so a store whose VCL can't be written is left as it was.
+varnish_page_cache() {
+  local file vcl refused
+  file="$(site_vcl)"
+  step "Serving pages through Varnish, with Magento's own VCL"
+  vcl="$(magento_vcl_script | exec_quiet php php)" ||
+    die "Magento's VCL generator stopped, so Varnish still passes every request. Run the step again with kapelos shell to see why"
+  [[ $vcl != *'{{'* ]] ||
+    die "Magento's VCL still has placeholders like {{ host }} in it, which Varnish can't load, so Varnish still passes every request"
+  vcl="$(purge_from_stack <<<"$vcl")"
+  [[ $vcl == *'("php");'* ]] ||
+    die "Magento's VCL has no purge list for Kapelos to fill in, so it wasn't loaded and Varnish still passes every request"
+  # Compiled by the store's own Varnish, on the stack's network, before it is written where Varnish would load it.
+  if ! refused="$(exec_quiet varnish sh -c 'cat >/tmp/kapelos-next.vcl && varnishd -C -f /tmp/kapelos-next.vcl >/dev/null 2>/tmp/kapelos-next.err || { cat /tmp/kapelos-next.err; exit 1; }' <<<"$vcl")"; then
+    die "Varnish won't compile Magento's VCL, so it wasn't loaded and Varnish still passes every request: $(grep -m 3 -v '^#\|^$' <<<"$refused" | tr '\n' ' ')"
+  fi
+  mkdir -p "$(dirname "$file")"
+  write_if_changed "$file" "$vcl"
+  magento config:set system/full_page_cache/caching_application 2
+  derive_vcl
+  [[ $VARNISH_VCL == "$file" ]] ||
+    echo "        VARNISH_VCL in the settings names $VARNISH_VCL, so Varnish loads that and not $file"
+  compose up -d --wait --no-deps varnish
+  magento cache:flush full_page >/dev/null
+}
+
+# Magento's health probe fails while a deploy rewrites the code, and Varnish then answers 503 until 5 of its last 10
+# probes pass, about 40 s at 5 s apart. This waits for that, so the store answers once the command says it's done.
+varnish_wait_healthy() {
+  [[ -n ${VARNISH_VCL:-} ]] || return 0
+  compose ps --status running --services | grep -qx varnish || return 0
+  local tries=0 list
+  while :; do
+    list="$(exec_quiet varnish varnishadm backend.list </dev/null)" || list=sick
+    grep -qw sick <<<"$list" || return 0
+    tries=$((tries + 1))
+    [[ $tries -lt 60 ]] || die "Varnish still sees the store as sick after two minutes, so it answers 503. kapelos varnish backend.list -p shows its probes"
+    sleep 2
+  done
+}
+
+# Varnish looks the purge list's names up when it loads a VCL, so a php container recreated since then has an address
+# it doesn't know, and Magento's purges are refused. Loading the same VCL again looks them up anew and keeps the cache.
+varnish_reload() {
+  [[ -n ${VARNISH_VCL:-} ]] || return 0
+  # A Varnish that isn't running loads the file afresh when it starts.
+  compose ps --status running --services | grep -qx varnish || return 0
+  local name old
+  name="kapelos_$(date +%s)"
+  if ! exec_quiet varnish varnishadm vcl.load "$name" /etc/varnish/default.vcl >/dev/null ||
+    ! exec_quiet varnish varnishadm vcl.use "$name" >/dev/null; then
+    die "Varnish wouldn't load its VCL again, so Magento's purges may be refused until it restarts. kapelos varnish vcl.list shows what it has"
+  fi
+  for old in $(exec_quiet varnish varnishadm vcl.list | awk '$1 == "available" { print $NF }'); do
+    exec_quiet varnish varnishadm vcl.discard "$old" >/dev/null || true
+  done
+}
+
 # Cache files written under other settings can stop bin/magento from starting at all, so they go first.
 clear_cache_files() {
   step "Removing Magento's cache files in var/cache and var/page_cache"
@@ -725,6 +845,7 @@ cmd_deploy() {
   [[ $(scale_web) -eq 1 ]] || deploy_step "Copying the release to every other web server" scale_refresh
   deploy_step "Emptying every cache" cmd_cache_reset
   deploy_step "Turning off maintenance mode" magento_on_every_server maintenance:disable
+  deploy_step "Waiting for Varnish to see the store healthy again" varnish_wait_healthy
   echo "Deployed. The store is in production mode; kapelos develop goes back."
 }
 
@@ -739,6 +860,8 @@ cmd_develop() {
   step "Turning off maintenance mode"
   magento_on_every_server maintenance:disable
   cmd_cache_reset
+  step "Waiting for Varnish to see the store healthy again"
+  varnish_wait_healthy
   echo "Back in developer mode."
 }
 

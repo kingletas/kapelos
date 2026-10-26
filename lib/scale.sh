@@ -132,10 +132,16 @@ EOF
         target: /app/pub/media
         bind:
           create_host_path: false
+  # Varnish connects to nginx-$n, because php-$n's host name web-$n is in Docker's DNS too, and Varnish refuses
+  # to load a backend whose name gives two addresses.
   web-$n:
     extends:
       file: $base
       service: web
+    networks:
+      default:
+        aliases:
+          - nginx-$n
     volumes:
       - type: volume
         source: app-$n
@@ -209,7 +215,7 @@ scale_vcl_text() {
   echo
   echo 'backend web_1 { .host = "web"; .port = "80"; .first_byte_timeout = 600s; }'
   for n in $(scale_extra_servers); do
-    echo "backend web_$n { .host = \"web-$n\"; .port = \"80\"; .first_byte_timeout = 600s; }"
+    echo "backend web_$n { .host = \"nginx-$n\"; .port = \"80\"; .first_byte_timeout = 600s; }"
   done
   echo
   echo "sub vcl_init {"
@@ -344,6 +350,15 @@ scale_before_up() {
       scale_copy "$n"
     fi
   done
+}
+
+# A replica that was never seeded is seeded before kapelos up waits on the store. Magento's health_check.php connects
+# to every database env.php names, Varnish's probe asks it, and Varnish's healthcheck fails while a backend is sick.
+scale_seed_before_up() {
+  [[ $(scale_replicas) -gt 0 && ${SCALE_RESEED_NEXT:-no} == no ]] || return 0
+  compose up -d --wait --no-deps db db-replica
+  [[ $(scale_replica_state) == none ]] || return 0
+  scale_seed_replica
 }
 
 # And after: a replica that was never seeded is seeded. One that stopped is reported, since the reason may be the finding.
@@ -505,7 +520,7 @@ scale_status() {
   if [[ $running == no ]]; then
     echo "The site is stopped. kapelos up starts it in this shape."
   else
-    [[ $(scale_web) -eq 1 ]] || echo "Varnish sends requests to each server in turn, and X-Kapelos-Server names the one that answered. To reach one directly: curl -H 'Host: $host' http://${BIND_ADDRESS:-127.0.0.1}:$(scale_port 2)/"
+    [[ $(scale_web) -eq 1 ]] || echo "Varnish sends requests to each server in turn, and X-Kapelos-Server names the one that built the page; a page from the cache names the one that built it then. To reach one directly: curl -H 'Host: $host' http://${BIND_ADDRESS:-127.0.0.1}:$(scale_port 2)/"
     echo "kapelos scale refresh copies the code to the other servers again; deploy, develop, composer and modules do it for you."
   fi
 }

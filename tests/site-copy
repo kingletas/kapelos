@@ -104,6 +104,7 @@ PROJECT_KEYS="MARIADB_VERSION"
 cmd_up() { echo "up \$ENV_FILE" >>"\$LOG"; }
 require_running() { :; }
 clear_cache_files() { echo "cache files" >>"\$LOG"; }
+varnish_page_cache() { echo "varnish page cache" >>"\$LOG"; }
 compose_exec() { echo "exec \$*" >>"\$LOG"; }
 exec_php() { echo "php \$*" >>"\$LOG"; }
 exec_php_no_xdebug() { echo "php \$*" >>"\$LOG"; }
@@ -307,6 +308,7 @@ check "and nothing of it is stopped" lacks "shop.env.* \(stop\|down\)" "$STUB_DO
 check "the copy is started" grep -qx "up etc/sites/shop-scratch.env" "$LOG"
 check "its address is set in its own database" grep -q "sql magento .*SET value = 'http://shop-scratch.test:8180/'" <<<"$(tr '\n' ' ' <"$LOG")"
 check "a database that matches the code is left alone" lacks "setup:upgrade" "$LOG"
+check "the copy serves its pages through Varnish, with a VCL of its own" grep -qx "varnish page cache" "$LOG"
 check "it says where the copy is and how to remove it" grep -q "kapelos site remove shop-scratch" <<<"$out"
 check "a copy that finished doesn't say it stopped part way" lacks "stopped part way" <<<"$out"
 check "the active site is still the one it was" test ! -L "$A/.env"

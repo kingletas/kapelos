@@ -301,6 +301,7 @@ cmd_adopt() {
     echo "        The search index starts empty, so Magento's own category listings and search show no products until it's built."
     echo "        For $products products: kapelos magento indexer:reset catalogsearch_fulltext, then kapelos magento indexer:reindex catalogsearch_fulltext"
   fi
+  varnish_page_cache
   cmd_cache_reset
 
   # RabbitMQ starts empty, and Magento declares its queues only in setup:upgrade, which the store's mode or a current database skips.

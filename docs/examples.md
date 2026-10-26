@@ -201,13 +201,7 @@ Open the file in KCachegrind, QCachegrind or your IDE's profiler view.
 
 ### Test full-page caching
 
-```bash
-kapelos config:set system/full_page_cache/caching_application 2
-kapelos varnish:vcl:generate --export-version=7 --backend-host=web --backend-port=80 \
-  --access-list=0.0.0.0/0 --output-file=var/varnish.vcl
-```
-
-On Mage-OS, read the README's [note on the generator](../README.md#full-page-caching-with-varnish) first. Set `VARNISH_VCL` in the site's settings to that file, which is `var/varnish.vcl` inside the store's folder, then `kapelos up`. Load a page twice:
+Every store Kapelos sets up already serves through Varnish with Magento's own VCL; the README's [Varnish section](../README.md#full-page-caching-with-varnish) says how. In developer mode, load a page twice:
 
 ```bash
 curl -sI http://acme.test:8080/ | grep -i x-magento-cache-debug    # MISS, then HIT

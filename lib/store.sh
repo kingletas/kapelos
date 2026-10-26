@@ -360,6 +360,7 @@ cmd_connect() {
   magento deploy:mode:set developer
   step "Rebuilding the search index, which starts empty here"
   magento indexer:reindex
+  varnish_page_cache
   cmd_cache_reset
   echo "Connected. Log in to the admin with an account from the imported database, or make one with: kapelos admin:user:create"
 }
@@ -420,6 +421,7 @@ cmd_magento_install() {
     --admin-lastname=Admin
 
   magento deploy:mode:set developer
+  varnish_page_cache
   echo
   echo "Installed. Storefront: $MAGENTO_BASE_URL"
 }

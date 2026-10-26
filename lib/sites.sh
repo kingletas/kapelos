@@ -654,6 +654,7 @@ site_copy() {
     step "Upgrading the copy's database to match its code"
     magento setup:upgrade --keep-generated
   fi
+  varnish_page_cache
   cmd_cache_reset
 
   SITE_COPY_UNFINISHED=""
