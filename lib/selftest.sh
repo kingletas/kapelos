@@ -94,6 +94,10 @@ PY
   [[ $(KAPELOS_HOME="$scratch/vcl-home" COMPOSE_PROJECT_NAME=kapelos-check-vcl VARNISH_VCL=/srv/own.vcl \
     bash -c "$(declare -f site_state_dir site_state_dir_of site_vcl derive_vcl); derive_vcl; printf '%s' \"\$VARNISH_VCL\"") == /srv/own.vcl ]] ||
     die "a VCL of the site's own in VARNISH_VCL is replaced by Magento's, so the store can't load its own"
+  for install in cmd_deploy cmd_develop; do
+    declare -f "$install" | holds -q 'varnish_wait_healthy' ||
+      die "$install says it's done while Varnish may still see the store as sick from the code it rewrote, so the store answers 503 for about 40 s"
+  done
   declare -f cmd_up | holds -q 'varnish_reload' ||
     die "kapelos up doesn't load the VCL again, so after php is recreated Varnish refuses Magento's purges from its new address"
   declare -f cmd_up | awk '/scale_seed_before_up/ { seeded = 1 } /--wait --remove-orphans/ { found = 1; ok = seeded; exit } END { exit !(found && ok) }' ||

@@ -670,6 +670,21 @@ varnish_page_cache() {
 
 # Varnish looks the purge list's names up when it loads a VCL, so a php container recreated since then has an address
 # it doesn't know, and Magento's purges are refused. Loading the same VCL again looks them up anew and keeps the cache.
+# Magento's health probe fails while a deploy rewrites the code, and Varnish then answers 503 until 5 of its last 10
+# probes pass, about 40 s at 5 s apart. This waits for that, so the store answers once the command says it's done.
+varnish_wait_healthy() {
+  [[ -n ${VARNISH_VCL:-} ]] || return 0
+  compose ps --status running --services | grep -qx varnish || return 0
+  local tries=0 list
+  while :; do
+    list="$(exec_quiet varnish varnishadm backend.list </dev/null)" || list=sick
+    grep -qw sick <<<"$list" || return 0
+    tries=$((tries + 1))
+    [[ $tries -lt 60 ]] || die "Varnish still sees the store as sick after two minutes, so it answers 503. kapelos varnish backend.list -p shows its probes"
+    sleep 2
+  done
+}
+
 varnish_reload() {
   [[ -n ${VARNISH_VCL:-} ]] || return 0
   # A Varnish that isn't running loads the file afresh when it starts.
@@ -830,6 +845,7 @@ cmd_deploy() {
   [[ $(scale_web) -eq 1 ]] || deploy_step "Copying the release to every other web server" scale_refresh
   deploy_step "Emptying every cache" cmd_cache_reset
   deploy_step "Turning off maintenance mode" magento_on_every_server maintenance:disable
+  deploy_step "Waiting for Varnish to see the store healthy again" varnish_wait_healthy
   echo "Deployed. The store is in production mode; kapelos develop goes back."
 }
 
@@ -844,6 +860,8 @@ cmd_develop() {
   step "Turning off maintenance mode"
   magento_on_every_server maintenance:disable
   cmd_cache_reset
+  step "Waiting for Varnish to see the store healthy again"
+  varnish_wait_healthy
   echo "Back in developer mode."
 }
 
