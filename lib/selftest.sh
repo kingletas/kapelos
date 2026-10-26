@@ -100,6 +100,8 @@ PY
     declare -f "$install" | holds -q 'varnish_wait_healthy' ||
       die "$install says it's done while Varnish may still see the store as sick from the code it rewrote, so the store answers 503 for about 40 s"
   done
+  declare -f varnish_on | awk '/The way back/ { warned = 1 } /varnish_page_cache/ { found = 1; ok = warned; exit } END { exit !(found && ok) }' ||
+    die "kapelos varnish on doesn't run varnish_page_cache, or runs it before printing the way back, so a store it switches either isn't switched or can't be switched back by what it said"
   declare -f cmd_up | holds -q 'varnish_reload' ||
     die "kapelos up doesn't load the VCL again, so after php is recreated Varnish refuses Magento's purges from its new address"
   declare -f cmd_up | awk '/scale_seed_before_up/ { seeded = 1 } /--wait --remove-orphans/ { found = 1; ok = seeded; exit } END { exit !(found && ok) }' ||
@@ -494,6 +496,22 @@ valkey_empty_after_reset() {
   [[ $(exec_quiet valkey-cache valkey-cli EXISTS kapelos:self-test:reset) == 0 ]]
 }
 
+# The way back kapelos varnish on prints leaves Varnish on the pass-through VCL, and varnish on then serves the store
+# through Magento's VCL again: a miss, a hit and a purge. Run once more, it changes nothing.
+varnish_on_switches_a_store() {
+  local file said
+  file="$(site_vcl)"
+  exec_quiet php php bin/magento config:set system/full_page_cache/caching_application 1 </dev/null >/dev/null
+  rm -f "$file"
+  cmd_up >/dev/null
+  ! exec_quiet varnish grep -q health_check.php /etc/varnish/default.vcl </dev/null || return 1
+  cmd_varnish on >/dev/null
+  exec_quiet varnish grep -q health_check.php /etc/varnish/default.vcl </dev/null || return 1
+  varnish_caches_and_purges || return 1
+  said="$(cmd_varnish on)"
+  [[ $said == *"Nothing changed."* ]]
+}
+
 install_refused() {
   ! (cmd_magento_install)
 }
@@ -595,6 +613,7 @@ cmd_self_test() {
   verify "the admin answers" status_is 200 "${STORE_URL}admin/"
   verify "Varnish serves a page from cache, and Magento's cache:flush purges it" varnish_caches_and_purges
   verify "checkout is never served from cache" status_and_not_cached "${STORE_URL}checkout/cart/"
+  verify "varnish on switches a store on the pass-through VCL to Magento's, and its way back switches it off" varnish_on_switches_a_store
   verify "PHP-FPM's status is not a page of the store" status_is 404 "${STORE_URL}fpm-status"
   verify "nginx's status is not a page of the store" status_is 404 "${STORE_URL}nginx-status"
   verify "nginx's status answers on the stack's own network" nginx_status_inside

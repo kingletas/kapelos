@@ -576,10 +576,34 @@ cmd_valkey() {
   esac
 }
 
-# varnishadm in the Varnish container: a ban, the ban list, the backends.
+# varnishadm in the Varnish container: a ban, the ban list, the backends. "on" is Kapelos's own, for a store set up
+# before every install served its pages through Varnish.
 cmd_varnish() {
-  [[ $# -gt 0 ]] || die "say what varnishadm should do: kapelos varnish ban.list, kapelos varnish backend.list"
+  [[ $# -gt 0 ]] || die "say what varnishadm should do: kapelos varnish ban.list, kapelos varnish backend.list, or kapelos varnish on"
+  if [[ $1 == on ]]; then
+    [[ $# -eq 1 ]] || die "kapelos varnish on takes nothing after it"
+    varnish_on
+    return
+  fi
   compose_exec varnish varnishadm "$@"
+}
+
+# The step every install runs, for a store set up before it did. The way back is printed before anything changes,
+# and a store already serving through Magento's VCL is left as it is.
+varnish_on() {
+  local file caching
+  load_env
+  file="$(site_vcl)"
+  caching="$(exec_quiet php php bin/magento config:show system/full_page_cache/caching_application </dev/null 2>/dev/null || true)"
+  if [[ $caching == 2 && -f $file && ${VARNISH_VCL:-} == "$file" ]]; then
+    echo "This store already serves its pages through Varnish, with Magento's VCL at $file. Nothing changed."
+    return 0
+  fi
+  echo "The way back, if this store should pass every request to PHP again:"
+  echo "        kapelos config:set system/full_page_cache/caching_application 1"
+  echo "        rm $file"
+  echo "        kapelos up"
+  varnish_page_cache
 }
 
 # Magento's purge list, with the containers that run bin/magento in place of the addresses it was given: php-2 to
