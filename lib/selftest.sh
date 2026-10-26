@@ -134,6 +134,21 @@ PY
   declare -f cmd_up | awk '/scale_seed_before_up/ { seeded = 1 } /--wait --remove-orphans/ { found = 1; ok = seeded; exit } END { exit !(found && ok) }' ||
     die "kapelos up waits on the store before seeding a new replica. Magento's health check fails on a replica with no database, so Varnish's probe marks the store sick and the wait never ends"
 
+  echo "self-test: its cleanup removes its own volumes and snapshots and no other project's, whatever COMPOSE_PROJECT_NAME says, against a stand-in docker"
+  mkdir -p "$scratch/cleanup/bin" "$scratch/cleanup/docker"
+  cp tests/stub-docker "$scratch/cleanup/bin/docker"
+  printf '%s\n' \
+    "${SELF_TEST_PROJECT}_db-data|$SELF_TEST_PROJECT|" \
+    "${SELF_TEST_PROJECT}_snapshot-self-test-scaled-db-data||$SELF_TEST_PROJECT|self-test-scaled|2026-01-02 03:04:05" \
+    "kapelos-demo_db-data|kapelos-demo|" \
+    "kapelos-demo_snapshot-before-db-data||kapelos-demo|before|2026-01-02 03:04:05" >"$scratch/cleanup/docker/volumes"
+  PATH="$scratch/cleanup/bin:$PATH" STUB_DOCKER="$scratch/cleanup/docker" COMPOSE_PROJECT_NAME=kapelos-demo \
+    SELF_TEST_PROJECT="$SELF_TEST_PROJECT" bash -c "$(declare -f remove_self_test_volumes); remove_self_test_volumes"
+  [[ $(cut -d'|' -f1 "$scratch/cleanup/docker/volumes" | LC_ALL=C sort | paste -sd ' ' -) == "kapelos-demo_db-data kapelos-demo_snapshot-before-db-data" ]] ||
+    die "the self-test's cleanup left its own volumes or snapshots, or removed another site's, and these remain: $(cut -d'|' -f1 "$scratch/cleanup/docker/volumes" | paste -sd ' ' -). A snapshot a failed run leaves makes every later run's restore check refuse to save"
+  declare -f cmd_self_test | awk '/^[[:space:]]*remove_self_test_volumes;?[[:space:]]*$/ { cleaned = 1 } /trap / { found = 1; ok = cleaned; exit } END { exit !(found && ok) }' ||
+    die "the self-test doesn't remove what an earlier run left before it starts, so a snapshot that run left makes the restore check refuse to save"
+
   echo "project: a store's allowed settings are read, and STORES becomes nginx's map"
   mkdir -p "$scratch/store/.kapelos/commands"
   write_env "$scratch/env-project" "MAGENTO_SRC=$scratch/store" "COMPOSE_PROJECT_NAME=kapelos-check-project" "PROXY_NETWORK=proxy"
@@ -620,9 +635,11 @@ cmd_self_test() {
   # This replaces the queue's own trap, so the turn at heavy work is given back here too.
   # What an earlier self-test left in the site's state folder, its VCL among them, would start this one's store.
   rm -rf var/sites/self-test
+  # So would a snapshot an earlier run left: the scaled restore check refuses to save over it.
+  remove_self_test_volumes
   trap 'compose down -v >/dev/null 2>&1; remove_self_test_volumes; rm -rf "$SELF_TEST_SCRATCH" var/sites/self-test; heavy_turn_release' EXIT
   write_env "$ENV_FILE" \
-    "COMPOSE_PROJECT_NAME=kapelos-self-test" \
+    "COMPOSE_PROJECT_NAME=$SELF_TEST_PROJECT" \
     "MAGENTO_SRC=$scratch/magento" \
     "APP_HOST=localhost" \
     "MAGENTO_BASE_URL=http://localhost:8080/"
@@ -683,9 +700,13 @@ cmd_self_test() {
 }
 
 # A scaled site's copies and replica aren't in compose.yaml, so down -v alone leaves them when a scaled check fails.
+# A snapshot's volumes carry only Kapelos's own labels, so they are asked for by those as well.
 remove_self_test_volumes() {
-  docker volume ls -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-kapelos-self-test}" |
-    while IFS= read -r volume; do docker volume rm "$volume" >/dev/null 2>&1 || true; done
+  local label
+  for label in com.docker.compose.project kapelos.snapshot.project; do
+    docker volume ls -q --filter "label=$label=$SELF_TEST_PROJECT" |
+      while IFS= read -r volume; do docker volume rm "$volume" >/dev/null 2>&1 || true; done
+  done
 }
 
 # What scaling back has to return to: the stack, env.php, the database's accounts and binary log, and the site's volumes.

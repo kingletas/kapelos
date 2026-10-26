@@ -26,6 +26,8 @@ REPOSITORIES_FILE=etc/repositories.tsv
 SHARE_COMMANDS=share/commands
 AUDIT_CHECKS=etc/audit/checks.tsv
 SNAPSHOT_VOLUMES="db-data opensearch-data rabbitmq-data"
+# The self-test's own Compose project. Its cleanup removes by this name, never by a COMPOSE_PROJECT_NAME the shell brought.
+SELF_TEST_PROJECT=kapelos-self-test
 # The ports a site publishes. kapelos env --slot N moves each one up by N strides, and a stride leaves room for kapelos scale's four servers above HTTP_PORT.
 PORT_KEYS="HTTP_PORT HTTPS_PORT DB_PORT MAIL_UI_PORT OPENSEARCH_PORT RABBITMQ_UI_PORT LIVERELOAD_PORT"
 PORT_SLOT_STRIDE=100
