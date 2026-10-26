@@ -1,0 +1,3 @@
+#!/bin/sh
+# Reloads PHP-FPM, process 1 in this container, whatever verb it is called with. See opt/php/Dockerfile.
+kill -USR2 1 && echo "php-fpm reloaded (${1:-no verb})"

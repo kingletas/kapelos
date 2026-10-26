@@ -1,0 +1,4 @@
+#!/bin/sh
+# Varnish runs in its own container, which this host can't restart. Said out loud, because a cache left full is a real
+# difference from what the deployment believes it did.
+echo "varnish: NOT restarted, it runs in its own container. kapelos varnish ban 'req.url ~ .' empties it"

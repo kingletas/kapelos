@@ -817,6 +817,7 @@ snapshot_before_deploy() {
 # Runs the steps a server deployment runs, in the same order, on the mounted tree.
 cmd_deploy() {
   load_env
+  refuse_on_deploy_target "kapelos deploy rehearses one on a mounted tree; deploy this one with your deployment tool"
   require_running php
   local locales keep="${SNAPSHOT_BEFORE_DEPLOY:-0}"
   read -r -a locales <<<"${DEPLOY_LOCALES:-en_US}"
@@ -851,6 +852,7 @@ cmd_deploy() {
 
 cmd_develop() {
   load_env
+  refuse_on_deploy_target "Its releases run in production mode; work on the store in a site of its own"
   require_running php
   step "Installing packages, including the development ones"
   exec_php composer install --no-interaction

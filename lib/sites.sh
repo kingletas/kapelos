@@ -461,10 +461,14 @@ site_remove() {
   echo "Removed $name."
 }
 
-# The image Kapelos built for a site, under every tag it has, one NAME:TAG a line. compose.yaml names it for
-# the project, and the filter takes that repository whole, so a site whose name only starts the same is not matched.
+# The images Kapelos built for a site, under every tag they have, one NAME:TAG a line: its PHP, and the deploy-target
+# image if it was one. The compose files name them for the project, and each filter takes that repository whole, so a
+# site whose name only starts the same is not matched.
 site_images() {
-  docker image ls --filter "reference=$1-php" --format '{{.Repository}}:{{.Tag}}'
+  local repository
+  for repository in "$1-php" "$1-deploy"; do
+    docker image ls --filter "reference=$repository" --format '{{.Repository}}:{{.Tag}}'
+  done
 }
 
 # What Docker still holds under a site's project name, one a line as "network NAME", "volume NAME" or "image NAME".

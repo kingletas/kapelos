@@ -208,6 +208,7 @@ PROJECT_KEYS=""
 . lib/sites.sh
 . lib/stack.sh
 . lib/scale.sh
+. lib/target.sh
 scale_before_up() {
   echo "reached the stack"
   exit 0

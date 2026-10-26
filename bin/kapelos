@@ -52,6 +52,8 @@ SELF_TEST_FAILED=0
 . "$KAPELOS_HOME/lib/stack.sh"
 # shellcheck source=lib/scale.sh
 . "$KAPELOS_HOME/lib/scale.sh"
+# shellcheck source=lib/target.sh
+. "$KAPELOS_HOME/lib/target.sh"
 # shellcheck source=lib/checks.sh
 . "$KAPELOS_HOME/lib/checks.sh"
 # shellcheck source=lib/tools.sh
@@ -113,6 +115,10 @@ The stack
                          Run the site on 1 to 4 web servers, each with its own copy of the code, and
                          with 0 or 1 database replica; with nothing after it, show the current shape
   scale refresh|reseed   Copy the code to the other web servers again, or the database to the replica
+  deploy-target          Show where a site deployed to over SSH keeps its releases, and how to reach it
+  deploy-target init ROOT --origin REPO [-y]
+                         Copy the store into ROOT as its first release and run it from there, with a
+                         build host that builds from REPO; a deployment tool then changes its code
 
 Working in the store
   magento-install        Install Magento into an empty database
@@ -230,6 +236,7 @@ main() {
     restart) compose restart "$@" ;;
     sample-data) cmd_sample_data ;;
     scale) cmd_scale "$@" ;;
+    deploy-target) cmd_deploy_target "$@" ;;
     seed) cmd_seed "$@" ;;
     self-test) cmd_self_test ;;
     shell) exec_php bash ;;

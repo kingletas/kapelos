@@ -7,7 +7,7 @@ ARG COMPOSER_VERSION=2.10
 
 FROM composer:${COMPOSER_VERSION} AS composer
 
-FROM php:${PHP_VERSION}-fpm
+FROM php:${PHP_VERSION}-fpm AS store
 
 ARG REDIS_VERSION=6.3.0
 ARG XDEBUG_VERSION=3.5.3
@@ -66,6 +66,41 @@ ENV COMPOSER_HOME=/home/app/.composer \
     XDEBUG_MODE=off \
     SMTP_HOST=mailpit \
     SMTP_PORT=1025
+
+USER app
+WORKDIR /app
+
+# The same PHP as a web server a deployment tool reaches over SSH: sshd for the one user, rsync, and Python for
+# Ansible. Only a site with DEPLOY_ROOT builds it; see compose.deploy-target.yaml.
+FROM store AS deploy-target
+
+USER root
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends openssh-server rsync python3 sudo acl; \
+    rm -rf /var/lib/apt/lists/*
+
+# A deployment becomes the user it logged in as and never root, so that is all sudo allows.
+RUN set -eux; \
+    echo 'app ALL=(app) NOPASSWD: ALL' > /etc/sudoers.d/app; \
+    chmod 440 /etc/sudoers.d/app
+
+# A deployment restarts PHP after it moves the release symlink, so workers stop serving the release they resolved
+# before. FPM is process 1 here and reloads on USR2, which is what every verb does: Ansible's restart is stop and then
+# start, and a script that only knew restart would report success with the old release still served. nginx follows
+# the symlink on each request and Varnish runs in its own container, so those two say they did nothing.
+COPY deploy-target/init.d/ /etc/init.d/
+RUN set -eux; \
+    chmod 755 /etc/init.d/php-fpm /etc/init.d/nginx /etc/init.d/varnish; \
+    for v in 8.1 8.2 8.3 8.4 8.5; do ln -sf php-fpm "/etc/init.d/php${v}-fpm"; done
+
+# /app is the live release, so every kapelos command runs on whatever the last deployment made live.
+RUN rm -rf /app && ln -s /srv/deploy-root/magento_current /app
+
+COPY deploy-target/sshd_config /etc/ssh/kapelos_sshd_config
+COPY deploy-target/ssh_config /etc/ssh/ssh_config.d/kapelos-deploy.conf
+COPY deploy-target/entrypoint /usr/local/bin/kapelos-deploy-entrypoint
 
 USER app
 WORKDIR /app

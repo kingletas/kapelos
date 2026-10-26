@@ -33,6 +33,7 @@ A *kapelos* was the small shopkeeper of an ancient Greek town. His bigger siblin
 - [Snapshots and dumps](#snapshots-and-dumps)
 - [A production-sized store](#a-production-sized-store)
 - [Rehearsing a deployment](#rehearsing-a-deployment)
+- [A store you deploy to](#a-store-you-deploy-to)
 - [More web servers and a database replica](#more-web-servers-and-a-database-replica)
 - [Running the store's tests](#running-the-stores-tests)
 - [Auditing a site](#auditing-a-site)
@@ -218,6 +219,7 @@ Everything lives in `.env`, or in the active site's file if you use [several pro
 | `STORES` | *(none)* | Other storefronts by hostname. See [Several storefronts](#several-storefronts) |
 | `CRON` | `no` | `yes` runs Magento's scheduled jobs. See [Cron and queue consumers](#cron-and-queue-consumers) |
 | `WEB_SERVERS`, `DB_REPLICAS` | `1`, `0` | How many web servers the site runs and whether its database has a replica. Change them with `bin/kapelos scale`. See [More web servers and a database replica](#more-web-servers-and-a-database-replica) |
+| `DEPLOY_ROOT`, `DEPLOY_ORIGIN`, `DEPLOY_SSH_PORT` | *(none)*, *(none)*, `2222` | Where a deploy target keeps its releases, the bare repository its builder clones, and the port its builder's sshd is published on. `deploy-target init` sets the first two. See [A store you deploy to](#a-store-you-deploy-to) |
 | `DEPLOY_LOCALES` | `en_US` | The languages `bin/kapelos deploy` builds static files for, separated by spaces |
 | `PHP_VERSION` | `8.4` | And one `*_VERSION` per service, `NODE_VERSION` included. The defaults are what the newest Magento release supports, and `etc/magento-versions.tsv` lists the versions for each release: `adopt` uses the store's row and `doctor` checks against it. `OPENSEARCH_VERSION` is a full release, such as `3.6.0`, because OpenSearch publishes no minor tags |
 | `COMPOSE_FILE` | `compose.yaml` | Which layers make up the stack |
@@ -713,6 +715,31 @@ bin/kapelos develop
 That reinstalls the development packages, switches to developer mode, which clears the compiled code and static files, turns maintenance off and empties every cache. `develop` also gets you out of a deployment that failed halfway.
 
 This rehearses the Magento steps. The rehearsal isn't a copy of production: PHP keeps its development settings, so OPcache still notices changed files and Xdebug is still installed.
+
+## A store you deploy to
+
+`kapelos deploy` rehearses the Magento steps on the tree you're working in. To try a deployment tool itself, one that ships a release to a web server over SSH and cuts over by moving a symlink, make the store a deploy target:
+
+```bash
+git init --bare ~/stores/shop.git
+bin/kapelos deploy-target init ~/stores/shop-deploy --origin ~/stores/shop.git
+bin/kapelos build
+bin/kapelos up
+```
+
+`init` copies the store into `~/stores/shop-deploy/releases/` as its first release, moves `pub/media` and `app/etc/env.php` into `shared/` with links to them, and points `magento_current` at the release. Then it sets `DEPLOY_ROOT`, `DEPLOY_ORIGIN` and `MAGENTO_SRC`, which is now the live release. Your tree isn't touched, and the line it adds to the site's settings names it, so the way back is taking `DEPLOY_ROOT` and `DEPLOY_ORIGIN` out and putting `MAGENTO_SRC` back.
+
+What changes:
+
+- **The store's PHP is the web server.** It runs sshd beside PHP-FPM, on port 2222 inside the stack, and keeps its name, so nginx, Varnish and the proxy reach it as before. nginx serves `magento_current` and resolves it on every request, and `/app` in the PHP containers is the live release, so `bin/kapelos magento` and the scheduled jobs run whatever is live.
+- **A `builder` beside it** builds releases in a tree of its own, cloned from `DEPLOY_ORIGIN`, which is mounted read-only. Push to that repository before you deploy.
+- **The builder is the only way in.** Its sshd is published on `127.0.0.1:DEPLOY_SSH_PORT` (2222) and forwards to the web server's sshd and nowhere else. The web server publishes nothing.
+- **sshd runs as your user, not root**, and lets in that one user with the deploy key and nothing else: no passwords, no root. `sudo` there can only become that same user, which is all a deployment's `become` needs.
+- **Keys are the site's own**, made on first use in `var/sites/SITE/deploy/`: the deploy key pair and `known_hosts` under `keys/`, and a host key for each server, so every connection checks the host. Copy `keys/` to the same path on the machine you deploy from, because the builder runs the upload with the key at the path your inventory names.
+- **Restarting PHP is a reload.** The image answers `php8.4-fpm` (and `php-fpm`) with FPM's graceful reload whatever the verb, so a deployment's restart clears OPcache and the realpath cache after the symlink moves. Asked to restart nginx or Varnish, it says why it didn't.
+- **`kapelos deploy`, `develop` and `scale` refuse** on a deploy target, because its code changes only through a deployment.
+
+`bin/kapelos deploy-target` shows the live release and how to reach both servers. From another machine, an inventory reaches the builder at `127.0.0.1` on `DEPLOY_SSH_PORT` through this one, and the web server at `php`, port 2222, through this one and then the builder; the builder reaches it by that same name for the upload. A deployment tool that expects its own layout settings, such as the web root and the shared folder, is given `DEPLOY_ROOT` for both, because the tree is mounted at its own path in every container and a link written into a release resolves the same everywhere.
 
 ## More web servers and a database replica
 
