@@ -714,9 +714,12 @@ varnish_page_cache() {
 
 # Magento's health probe fails while a deploy rewrites the code, and Varnish then answers 503 until 5 of its last 10
 # probes pass, about 40 s at 5 s apart. This waits for that, so the store answers once the command says it's done.
+# The first health check after a cache reset takes seconds, longer than the probe's 2 s, so it is asked here first:
+# a probe that times out on it can tip a backend with few passes left into sick just after the wait returns.
 varnish_wait_healthy() {
   [[ -n ${VARNISH_VCL:-} ]] || return 0
   compose ps --status running --services | grep -qx varnish || return 0
+  exec_quiet php curl -s -o /dev/null -m 60 http://web/health_check.php </dev/null || true
   local tries=0 list
   while :; do
     list="$(exec_quiet varnish varnishadm backend.list </dev/null)" || list=sick

@@ -100,6 +100,8 @@ PY
     declare -f "$install" | holds -q 'varnish_wait_healthy' ||
       die "$install says it's done while Varnish may still see the store as sick from the code it rewrote, so the store answers 503 for about 40 s"
   done
+  declare -f varnish_wait_healthy | awk '/health_check\.php/ { warmed = 1 } /while/ { found = 1; ok = warmed; exit } END { exit !(found && ok) }' ||
+    die "varnish_wait_healthy watches Varnish without first asking the store's health check itself, so the slow first answer after a cache reset falls to a probe and can turn the store sick just after the wait returns"
   declare -f audit_passes_beyond_dependencies | holds -q '>&4' ||
     die "the self-test's audit check fails without printing what the audit said, so a failure there can't be read"
   declare -f varnish_on | awk '/The way back/ { warned = 1 } /varnish_page_cache/ { found = 1; ok = warned; exit } END { exit !(found && ok) }' ||
