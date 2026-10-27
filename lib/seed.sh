@@ -270,6 +270,8 @@ seed_run() {
     copy="$(magento_seed_profile_copy "$profile" "$stock")" || exit 1
     grep -qF "<di>../../$SEED_MAIL_STAND_INS</di>" <<<"$copy" ||
       die "the copy of Magento's $profile doesn't name the generator's stand-ins for mail, so its mail would go out through the store's own transport"
+    [[ $(grep -c '<admin_users>0</admin_users>' <<<"$copy" || true) == 1 ]] ||
+      die "the copy of Magento's $profile would still add admin users: its admin_users isn't written on one line as <admin_users>N</admin_users>, so it wasn't set to 0"
     path="$SEED_PROFILE_DIR/magento-$profile.xml"
   fi
   carts="$(db_root -N -e "SELECT COUNT(*) $(seed_carts_in_the_way_where)" </dev/null)" || die "can't count this store's carts, so can't tell whether the generator's orders would fit"
