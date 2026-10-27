@@ -61,15 +61,42 @@ seed_settings_to_leave_out() {
   printf '%s' "$out"
 }
 
-# Copies a profile Kapelos ships into the store, since the generator runs in the container, without the
-# settings named in LEAVE_OUT.
+# Puts the profile on standard input into the store as NAME.xml, since the generator runs in the container,
+# without the settings named in LEAVE_OUT.
 seed_profile_put() {
-  local file="$KAPELOS_HOME/share/seed/$1.xml" leave_out="${2:-}"
+  local name="$1" leave_out="${2:-}"
   if [[ -n $leave_out ]]; then
-    grep -v -E "<($leave_out)>" "$file" | exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$1"
+    grep -v -E "<($leave_out)>" | exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$name"
   else
-    exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$1" <"$file"
+    exec_quiet php sh -c 'mkdir -p "$1" && cat >"$1/$2.xml"' sh "$SEED_PROFILE_DIR" "$name"
   fi
+}
+
+# The shared files every one of Magento's own profiles includes from its own folder.
+SEED_MAGENTO_INCLUDES="searchTermsLarge.xml attributeSets.xml searchConfig.xml customerConfig.xml description.xml shortDescription.xml"
+
+# Prints a copy of one of Magento's own profiles that adds no admin users, since the generator makes them with
+# a 7-character password and a store asking for 12 refuses it. The copy sits beside ours, so the shared files
+# and the stand-ins for mail, which Magento's reaches from its own folder, are named from there. A profile
+# shaped otherwise is refused, naming what differed: a path the copy failed to move would be skipped silently.
+magento_seed_profile_copy() {
+  local name="$1" stock="$2" text hrefs expected count
+  text="$(exec_quiet php cat "$stock" </dev/null)" || die "can't read $stock in the store"
+  hrefs="$(grep -o 'href="[^"]*"' <<<"$text" | LC_ALL=C sort | tr '\n' ' ' || true)"
+  expected="$(for file in $SEED_MAGENTO_INCLUDES; do printf 'href="../../config/%s"\n' "$file"; done | LC_ALL=C sort | tr '\n' ' ')"
+  [[ $hrefs == "$expected" ]] ||
+    die "Magento's $name reaches its shared files otherwise than a copy of it can, so it isn't seeded. It includes: ${hrefs:-nothing}"
+  count="$(grep -o '<admin_users>' <<<"$text" | grep -c . || true)"
+  [[ $count == 1 ]] || die "Magento's $name names admin_users $count times, and a copy that adds none needs it named once"
+  ! grep -q '<di>' <<<"$text" ||
+    die "Magento's $name names its own stand-ins for mail, from its own folder, so a copy of it can't be sure to find them"
+  [[ $(grep -c '<profile>' <<<"$text" || true) == 1 ]] ||
+    die "Magento's $name has no single <profile> to add the stand-ins for mail to, so it isn't seeded"
+  awk -v di="../../$SEED_MAIL_STAND_INS" '
+    { sub(/<admin_users>[^<]*<\/admin_users>/, "<admin_users>0</admin_users>")
+      gsub(/href="\.\.\/\.\.\/config\//, "href=\"../../setup/performance-toolkit/config/")
+      print }
+    /<profile>/ { print "        <di>" di "</di>" }' <<<"$text"
 }
 
 seed_list() {
@@ -216,7 +243,7 @@ seed_failed() {
 # Generates, reindexes, records and snapshots. The generator adds only what the store lacks to reach the
 # profile's numbers, so a store grows by seeding a larger profile over a smaller one.
 seed_run() {
-  local profile="$1" snapshot=yes empty_carts=no keep path generate_s reindex_s carts leave_out=""
+  local profile="$1" snapshot=yes empty_carts=no keep path generate_s reindex_s carts leave_out="" stock copy=""
   shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -239,7 +266,11 @@ seed_run() {
       die "share/seed/$profile.xml doesn't name the generator's stand-ins for mail, so its mail would go out through the store's own transport. It needs this line in its profile: <di>../../$SEED_MAIL_STAND_INS</di>"
     path="$SEED_PROFILE_DIR/$profile.xml"
   else
-    path="$(magento_seed_profile_path "$profile")" || die "there's no profile called $profile. kapelos seed lists them"
+    stock="$(magento_seed_profile_path "$profile")" || die "there's no profile called $profile. kapelos seed lists them"
+    copy="$(magento_seed_profile_copy "$profile" "$stock")" || exit 1
+    grep -qF "<di>../../$SEED_MAIL_STAND_INS</di>" <<<"$copy" ||
+      die "the copy of Magento's $profile doesn't name the generator's stand-ins for mail, so its mail would go out through the store's own transport"
+    path="$SEED_PROFILE_DIR/magento-$profile.xml"
   fi
   carts="$(db_root -N -e "SELECT COUNT(*) $(seed_carts_in_the_way_where)" </dev/null)" || die "can't count this store's carts, so can't tell whether the generator's orders would fit"
   [[ $carts == 0 || $empty_carts == yes ]] ||
@@ -264,11 +295,14 @@ seed_run() {
     db_root -e "DELETE $(seed_carts_in_the_way_where)" </dev/null
   fi
   # Put there last, so a refusal above leaves nothing of the seed in the store.
+  leave_out="$(seed_settings_to_leave_out)" || die "can't count this store's tax and price rules, so can't tell what the generator would make a second time"
+  [[ -z $leave_out ]] ||
+    echo "Left out of this seed, since the store has them already and the generator would replace or repeat them: ${leave_out//|/, }"
   if seed_profile_is_ours "$profile"; then
-    leave_out="$(seed_settings_to_leave_out)" || die "can't count this store's tax and price rules, so can't tell what the generator would make a second time"
-    [[ -z $leave_out ]] ||
-      echo "Left out of this seed, since the store has them already and the generator would replace or repeat them: ${leave_out//|/, }"
-    seed_profile_put "$profile" "$leave_out"
+    seed_profile_put "$profile" "$leave_out" <"$KAPELOS_HOME/share/seed/$profile.xml"
+  else
+    echo "Seeding a copy of Magento's $profile that adds no admin users: it makes them with 7-character passwords, which a store asking for 12 refuses."
+    seed_profile_put "magento-$profile" "$leave_out" <<<"$copy"
   fi
 
   step "Generating $profile with Magento's own generator. A large profile takes hours"
