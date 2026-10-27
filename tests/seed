@@ -142,6 +142,7 @@ exec_quiet() {
       echo "profile put at \$5/\$6.xml" >>"\$LOG"
       ;;
     "php test -f setup/performance-toolkit/profiles/ce/medium_msite.xml") return 0 ;;
+    "php cat setup/performance-toolkit/profiles/ce/medium_msite.xml") cat "\$STOCK_PROFILE" ;;
     "php test -f "*) return 1 ;;
     "php sh -c for f in setup"*) printf 'medium\nmedium_msite\n' ;;
     "php du -sk pub/media") printf '3072\tpub/media\n' ;;
@@ -257,14 +258,81 @@ check "a SEED_SNAPSHOT_KEEP that is no count is refused" refused "SEED_SNAPSHOT_
 
 # --- Magento's own profiles -----------------------------------------------------
 
+# Shaped as Magento's own are: admin users asked for, the six shared files reached from Magento's folder, and no
+# line naming the generator's stand-ins for mail, so they too are found from Magento's folder.
+export STOCK_PROFILE="$SCRATCH/stock-profile.xml"
+stock_profile() {
+  cat >"$STOCK_PROFILE" <<'XML'
+<?xml version="1.0"?>
+<config xmlns:xi="http://www.w3.org/2001/XInclude">
+    <profile>
+        <admin_users>50</admin_users><!-- Number of admin users to generate -->
+        <websites>1</websites>
+        <simple_products>800</simple_products>
+        <tax_rates_file>tax_rates_small.csv</tax_rates_file>
+        <tax_rules>2</tax_rules>
+        <catalog_price_rules>4</catalog_price_rules>
+        <xi:include href="../../config/searchTermsLarge.xml" />
+        <xi:include href="../../config/attributeSets.xml" />
+        <xi:include href="../../config/searchConfig.xml" />
+        <xi:include href="../../config/customerConfig.xml" />
+        <xi:include href="../../config/description.xml" />
+        <xi:include href="../../config/shortDescription.xml" />
+    </profile>
+</config>
+XML
+}
+
 reset_docker
 saved_snapshot shop clean "2026-01-05 09:00:00"
 rm -f "$IN_STORE"
+stock_profile
 out="$(run_on shop cmd_seed medium_msite)"
-check "one of Magento's own profiles is read where Magento keeps it" grep -q "generate-fixtures --skip-reindex setup/performance-toolkit/profiles/ce/medium_msite.xml$" "$LOG"
-check "and nothing is put in the store for it" test ! -e "$IN_STORE"
-check "nor taken out of it" lacks "profile removed" "$LOG"
+check "one of Magento's own profiles is seeded from a copy beside ours" grep -q "generate-fixtures --skip-reindex var/kapelos-seed/magento-medium_msite.xml$" "$LOG"
+check "named so it never meets one of ours" grep -qx "profile put at var/kapelos-seed/magento-medium_msite.xml" "$LOG"
+check "the copy asks for no admin users" grep -q "<admin_users>0</admin_users>" "$IN_STORE"
+check "and asks for nothing else of them" test "$(grep -c "<admin_users>" "$IN_STORE")" -eq 1
+check "it reaches the six shared files from our folder" test "$(grep -c 'href="../../setup/performance-toolkit/config/' "$IN_STORE")" -eq 6
+check "and none from Magento's" lacks 'href="../../config/' "$IN_STORE"
+check "it names the generator's stand-ins for mail" grep -q "<di>../../setup/performance-toolkit/config/di.xml</di>" "$IN_STORE"
+check "everything else is as Magento wrote it" grep -q "<simple_products>800</simple_products>" "$IN_STORE"
+check "the seed says why it is a copy" grep -q "Seeding a copy of Magento's medium_msite that adds no admin users: it makes them with 7-character passwords, which a store asking for 12 refuses" <<<"$out"
+check "the copy is taken out of the store after" grep -qx "profile removed var/kapelos-seed/magento-medium_msite.xml" "$LOG"
 check "its series is named with dashes, as a snapshot's name is" grep -q "^Saved seed-medium-msite-[0-9]\{8\}-[0-9]\{6\}\." <<<"$out"
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+stock_profile
+rm -f "$IN_STORE"
+STUB_RULES="1	4	0" run_on shop cmd_seed medium_msite >/dev/null
+check "a copy is put for a store that has rules already" grep -q "<admin_users>0</admin_users>" "$IN_STORE"
+check "a copy leaves out what the store has already, as ours do" lacks "<tax_rules>" "$IN_STORE"
+check "the tax rates with it" lacks "<tax_rates_file>" "$IN_STORE"
+check "and the generator's catalog rules" lacks "<catalog_price_rules>" "$IN_STORE"
+
+reset_docker
+saved_snapshot shop clean "2026-01-05 09:00:00"
+stock_profile
+out="$(STUB_PHP_FAILS=generate-fixtures run_on shop cmd_seed medium_msite 2>&1)" && out="it passed"
+check "a generator that fails on a copy ends the seed" grep -q "^kapelos: generating medium_msite failed" <<<"$out"
+check "and the copy is out of the store" grep -qx "profile removed var/kapelos-seed/magento-medium_msite.xml" "$LOG"
+
+# A profile shaped otherwise is refused before anything is saved or put, naming what differed, since a copy
+# that misses a path the generator silently skips would send its mail through the store's own transport.
+for shape in includes admin_users di profile; do
+  reset_docker
+  saved_snapshot shop clean "2026-01-05 09:00:00"
+  stock_profile
+  case "$shape" in
+    includes) expect="reaches its shared files otherwise" && sed -i.bak 's#"../../config/searchConfig.xml"#"../config/searchConfig.xml"#' "$STOCK_PROFILE" ;;
+    admin_users) expect="names admin_users 2 times" && sed -i.bak 's#<websites>1</websites>#<admin_users>3</admin_users>#' "$STOCK_PROFILE" ;;
+    di) expect="names its own stand-ins for mail" && sed -i.bak 's#<websites>1</websites>#<di>../../config/di.xml</di>#' "$STOCK_PROFILE" ;;
+    profile) expect="has no single <profile> to add the stand-ins for mail to" && sed -i.bak 's#<profile>#<profiles>#' "$STOCK_PROFILE" ;;
+  esac
+  rm -f "$STOCK_PROFILE.bak"
+  check "a stock profile whose $shape differ is refused, saying so" refused "$expect" run_on shop cmd_seed medium_msite
+  check "with nothing put in the store, generated or saved ($shape)" bash -c "! grep -q 'profile put at\|generate-fixtures' '$LOG' && ! grep -q 'volume create' '$STUB_DOCKER/calls'"
+done
 
 # --- no snapshot, and what is refused ---------------------------------------------
 
