@@ -417,6 +417,8 @@ modules_add() {
   magento module:enable "${modules[@]}"
   magento setup:upgrade
   cmd_cache_reset
+  step "Waiting for Varnish to see the store healthy again"
+  varnish_wait_healthy
   echo "Added. kapelos modules shows what's installed."
 }
 

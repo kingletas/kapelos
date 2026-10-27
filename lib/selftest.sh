@@ -96,10 +96,14 @@ PY
   [[ $(KAPELOS_HOME="$scratch/vcl-home" COMPOSE_PROJECT_NAME=kapelos-check-vcl VARNISH_VCL=/srv/own.vcl \
     bash -c "$(declare -f site_state_dir site_state_dir_of site_vcl derive_vcl); derive_vcl; printf '%s' \"\$VARNISH_VCL\"") == /srv/own.vcl ]] ||
     die "a VCL of the site's own in VARNISH_VCL is replaced by Magento's, so the store can't load its own"
-  for install in cmd_deploy cmd_develop; do
+  for install in cmd_deploy cmd_develop modules_add; do
     declare -f "$install" | holds -q 'varnish_wait_healthy' ||
       die "$install says it's done while Varnish may still see the store as sick from the code it rewrote, so the store answers 503 for about 40 s"
   done
+  declare -f varnish_wait_healthy | awk '/health_check\.php/ { warmed = 1 } /while/ { found = 1; ok = warmed; exit } END { exit !(found && ok) }' ||
+    die "varnish_wait_healthy watches Varnish without first asking the store's health check itself, so the slow first answer after a cache reset falls to a probe and can turn the store sick just after the wait returns"
+  declare -f audit_passes_beyond_dependencies | holds -q '>&4' ||
+    die "the self-test's audit check fails without printing what the audit said, so a failure there can't be read"
   declare -f varnish_on | awk '/The way back/ { warned = 1 } /varnish_page_cache/ { found = 1; ok = warned; exit } END { exit !(found && ok) }' ||
     die "kapelos varnish on doesn't run varnish_page_cache, or runs it before printing the way back, so a store it switches either isn't switched or can't be switched back by what it said"
   echo "varnish on: a site's own VCL is left as it is, and an open purge list is named with the store's address"
@@ -653,6 +657,8 @@ cmd_self_test() {
 
   echo
   echo "Self-test"
+  # verify hides what a check prints; a check with something to show when it fails writes it to 4.
+  exec 4>&1
   verify "the storefront answers" status_is 200 "$STORE_URL"
   verify "the admin answers" status_is 200 "${STORE_URL}admin/"
   verify "Varnish serves a page from cache, and Magento's cache:flush purges it" varnish_caches_and_purges
@@ -784,11 +790,18 @@ scaled_back_as_before() {
 }
 
 # Whether the dependencies pass depends on what advisories are published that week; everything else the audit checks has to.
+# A failure prints what the audit said past the dependencies, or all of it when it stopped before its last section.
 audit_passes_beyond_dependencies() {
   local out
   out="$(cmd_site audit 2>&1 || true)"
-  [[ $out == *"Security headers Magento sends"* ]] || return 1
-  ! printf '%s\n' "$out" | sed -n '/^Credentials, checked/,$p' | holds -q '^  FAIL '
+  if [[ $out != *"Security headers Magento sends"* ]]; then
+    printf '%s\n' "$out" | sed 's/^/        /' >&4
+    return 1
+  fi
+  if printf '%s\n' "$out" | sed -n '/^Credentials, checked/,$p' | holds -q '^  FAIL '; then
+    printf '%s\n' "$out" | sed -n '/^Credentials, checked/,$p' | sed 's/^/        /' >&4
+    return 1
+  fi
 }
 
 kingletas_modules_install() {
