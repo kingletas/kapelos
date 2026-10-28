@@ -8,7 +8,7 @@ Thanks for looking.
 bin/kapelos check
 ```
 
-That's everything a commit has to pass. `make check` runs the same thing. `check` makes sure both compose layouts are valid, that a missing `MAGENTO_SRC` is refused, and that the scripts and YAML are clean. It needs Docker and `yamllint`.
+That's everything a commit has to pass. `make check` runs the same thing. `check` makes sure both compose layouts are valid, that a missing `MAGENTO_SRC` is refused, and that the scripts and YAML are clean. It needs Docker, `yamllint`, Python 3 and PHP.
 
 `check` reads the scripts with one version of ShellCheck on every machine, the one `etc/shellcheck.tsv` names, so a pass on your machine and a pass on the runner are the same pass. It downloads that version once into `var/bin`, and runs it only if the download matches the checksum in that file; a `shellcheck` you have installed isn't used. To raise the version, change it on all four lines of `etc/shellcheck.tsv` and replace each checksum with the one the release gives for that machine's `.tar.gz`, either on the release's page or from `gh api repos/koalaman/shellcheck/releases/tags/VERSION`. The next `check` downloads it, and `tests/pinned-tools` fails if the file names two versions or a checksum is cut short.
 
