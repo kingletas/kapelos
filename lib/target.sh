@@ -28,7 +28,8 @@ derive_deploy_target() {
 }
 
 # A key pair for the deployment, a host key for each node, and the known_hosts that names both, so nothing that
-# connects ever skips the host check. Kept in the site's state folder, readable only by you.
+# connects ever skips the host check. Kept in the site's state folder, readable only by you. Also the builder's own
+# shared/env.php, made on every run so a target made before it existed gets one too.
 deploy_target_keys() {
   local dir="$KAPELOS_DEPLOY_STATE" known
   if [[ ! -f $dir/keys/id_deploy || ! -f $dir/host_key_web || ! -f $dir/host_key_builder ]]; then
@@ -44,6 +45,12 @@ deploy_target_keys() {
   known="[127.0.0.1]:$DEPLOY_SSH_PORT $(cut -d' ' -f1,2 "$dir/host_key_builder.pub")
 [php]:2222 $(cut -d' ' -f1,2 "$dir/host_key_web.pub")"
   write_if_changed "$dir/keys/known_hosts" "$known"
+  # A deployment links the build's app/etc/env.php at shared/env.php before any bin/magento call, and
+  # setup:di:compile writes into it. The builder mounts its own tree, never the host's shared/, so it gets a
+  # scratch env.php of its own: empty when made, never overwritten, and never the live one.
+  mkdir -p "$dir/builder-tree/shared"
+  [[ -e $dir/builder-tree/shared/env.php || -L $dir/builder-tree/shared/env.php ]] ||
+    : >"$dir/builder-tree/shared/env.php"
 }
 
 refuse_on_deploy_target() {
