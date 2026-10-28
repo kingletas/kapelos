@@ -866,4 +866,36 @@ PY_CHECK
   grep -q 'PermitOpen=php:2222' opt/php/deploy-target/entrypoint || die "the builder forwards to more than the web node's sshd"
   grep -qx '    StrictHostKeyChecking yes' opt/php/deploy-target/ssh_config || die "the builder's upload no longer checks the web node's host key"
   grep -q "echo 'app ALL=(app) NOPASSWD: ALL'" opt/php/Dockerfile || die "sudo on a deploy target allows more than becoming app"
+
+  echo "deploy target: the builder gets a scratch env.php of its own, kept once made, and the live one is untouched"
+  check_builder_env_php "$dir"
+}
+
+# A target whose keys all exist already, as one made before the builder's env.php was, so the keys' own branch is
+# skipped and the env.php has to come from the part that runs every time.
+check_builder_env_php() {
+  local state="$1/builder-state" live="$1/root/shared/env.php" scratch_php before after
+  scratch_php="$state/builder-tree/shared/env.php"
+  mkdir -p "$state/keys" "$1/root/shared"
+  : >"$state/keys/id_deploy"
+  : >"$state/host_key_web"
+  : >"$state/host_key_builder"
+  echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIInventedKeyForTheCheckOnly0000000000000 check" |
+    tee "$state/keys/id_deploy.pub" "$state/host_key_web.pub" >"$state/host_key_builder.pub"
+  echo "<?php return ['db' => ['connection' => ['default' => ['host' => 'live.example.invalid']]]];" >"$live"
+  touch -t 200102030405 "$live"
+  before="$(cksum <"$live") $(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$live")"
+
+  (KAPELOS_DEPLOY_STATE="$state" DEPLOY_SSH_PORT=2222 deploy_target_keys)
+  [[ -f $scratch_php && ! -s $scratch_php ]] || die "a deploy target's builder has no empty shared/env.php for a build to link"
+  [[ -O $scratch_php && -w $scratch_php ]] ||
+    die "the builder's env.php isn't the stack user's to write, and setup:di:compile writes into it"
+
+  echo "<?php return ['written' => 'by a build'];" >"$scratch_php"
+  (KAPELOS_DEPLOY_STATE="$state" DEPLOY_SSH_PORT=2222 deploy_target_keys)
+  [[ $(cat "$scratch_php") == "<?php return ['written' => 'by a build'];" ]] ||
+    die "making the builder's env.php overwrote the one a build had already written"
+
+  after="$(cksum <"$live") $(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$live")"
+  [[ $after == "$before" ]] || die "making the builder's env.php touched the live shared/env.php"
 }
