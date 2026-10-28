@@ -3,7 +3,7 @@
 # shellcheck disable=SC2016 # single-quoted code runs in a container's shell, which expands it
 
 cmd_check() {
-  require_tools docker yamllint python3
+  require_tools docker yamllint python3 php
 
   CHECK_SCRATCH="$(mktemp -d)"
   trap 'rm -rf "$CHECK_SCRATCH"' EXIT
@@ -887,9 +887,16 @@ check_builder_env_php() {
   before="$(cksum <"$live") $(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$live")"
 
   (KAPELOS_DEPLOY_STATE="$state" DEPLOY_SSH_PORT=2222 deploy_target_keys)
-  [[ -f $scratch_php && ! -s $scratch_php ]] || die "a deploy target's builder has no empty shared/env.php for a build to link"
+  [[ -f $scratch_php ]] || die "a deploy target's builder has no shared/env.php for a build to link"
+  php_returns_array "$scratch_php" ||
+    die "the builder's env.php doesn't return a PHP array, and Magento refuses anything else as an invalid configuration file"
   [[ -O $scratch_php && -w $scratch_php ]] ||
     die "the builder's env.php isn't the stack user's to write, and setup:di:compile writes into it"
+
+  # A zero-byte one, as an earlier Kapelos made, is a file Magento refuses, so it is written again.
+  : >"$scratch_php"
+  (KAPELOS_DEPLOY_STATE="$state" DEPLOY_SSH_PORT=2222 deploy_target_keys)
+  php_returns_array "$scratch_php" || die "a zero-byte builder env.php was left for Magento to refuse"
 
   echo "<?php return ['written' => 'by a build'];" >"$scratch_php"
   (KAPELOS_DEPLOY_STATE="$state" DEPLOY_SSH_PORT=2222 deploy_target_keys)
@@ -898,4 +905,9 @@ check_builder_env_php() {
 
   after="$(cksum <"$live") $(python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_mtime_ns)' "$live")"
   [[ $after == "$before" ]] || die "making the builder's env.php touched the live shared/env.php"
+}
+
+# Read the way Magento reads env.php: PHP that parses, and includes to an array.
+php_returns_array() {
+  php -l "$1" >/dev/null 2>&1 && php -r 'exit(is_array(include $argv[1]) ? 0 : 1);' "$1"
 }

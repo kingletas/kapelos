@@ -47,10 +47,12 @@ deploy_target_keys() {
   write_if_changed "$dir/keys/known_hosts" "$known"
   # A deployment links the build's app/etc/env.php at shared/env.php before any bin/magento call, and
   # setup:di:compile writes into it. The builder mounts its own tree, never the host's shared/, so it gets a
-  # scratch env.php of its own: empty when made, never overwritten, and never the live one.
+  # scratch env.php of its own: an empty PHP array, since Magento refuses a file that returns anything else, a zero-byte
+  # one included. One a build has written is never overwritten, a link is never written through, and it is never the
+  # live one.
   mkdir -p "$dir/builder-tree/shared"
-  [[ -e $dir/builder-tree/shared/env.php || -L $dir/builder-tree/shared/env.php ]] ||
-    : >"$dir/builder-tree/shared/env.php"
+  [[ -L $dir/builder-tree/shared/env.php || -s $dir/builder-tree/shared/env.php ]] ||
+    echo '<?php return [];' >"$dir/builder-tree/shared/env.php"
 }
 
 refuse_on_deploy_target() {
